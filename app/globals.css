@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --background: #FFFFFF;
+    --foreground: #0F172A;
+    --surface-subtle: #F8FAFC;
+    --surface-card: #FFFFFF;
+    --surface-border: #E2E8F0;
+    --brand-yellow: #FFE500;
+    --brand-yellow-hover: #EAB308;
+    --brand-yellow-light: #FEF08A;
+    --brand-blue: #0284C7;
+    --brand-navy: #0F172A;
+    --text-muted: #64748B;
+    --text-dark: #0F172A;
+    --success: #16A34A;
+    --warning: #D97706;
+    --danger: #DC2626;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Custom rounded card & dock styles inspired by SkyBound reference */
+.reference-card {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 1.5rem;
+  box-shadow: 0 4px 20px -2px rgba(15, 23, 42, 0.05);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.reference-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px -4px rgba(15, 23, 42, 0.08);
+  border-color: #CBD5E1;
+}
+
+.search-dock {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 2rem;
+  box-shadow: 0 12px 32px -4px rgba(15, 23, 42, 0.08);
+}
+
+.pill-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.pill-badge-yellow {
+  background-color: #FEF08A;
+  color: #854D0E;
+}
+
+.pill-badge-peach {
+  background-color: #FFEDD5;
+  color: #9A3412;
+}
+
+.pill-badge-cyan {
+  background-color: #E0F2FE;
+  color: #0369A1;
+}
+
+.pill-badge-gray {
+  background-color: #F1F5F9;
+  color: #475569;
+}
+
