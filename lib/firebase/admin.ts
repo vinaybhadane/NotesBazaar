@@ -2,17 +2,48 @@ import * as admin from 'firebase-admin';
 
 function formatPrivateKey(key?: string): string | undefined {
   if (!key) return undefined;
-  let cleaned = key.trim();
-  // Strip outer quotes if pasted with quotes into environment variables
-  if (
-    (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
-    (cleaned.startsWith("'") && cleaned.endsWith("'"))
-  ) {
-    cleaned = cleaned.slice(1, -1);
+  let k = key.trim();
+
+  // If the variable name itself was accidentally pasted in the value field:
+  if (k.startsWith('FIREBASE_ADMIN_PRIVATE_KEY=')) {
+    k = k.substring('FIREBASE_ADMIN_PRIVATE_KEY='.length).trim();
   }
-  // Replace literal escaped newlines with actual newlines
-  cleaned = cleaned.replace(/\\n/g, '\n').replace(/\r/g, '');
-  return cleaned.trim();
+
+  // Remove surrounding double or single quotes repeatedly
+  while (
+    (k.startsWith('"') && k.endsWith('"')) ||
+    (k.startsWith("'") && k.endsWith("'"))
+  ) {
+    k = k.slice(1, -1).trim();
+  }
+
+  // Unescape escaped quotes if any (\")
+  k = k.replace(/\\"/g, '"');
+
+  // Handle quadruple or double escaped backslashes
+  k = k.replace(/\\\\n/g, '\n');
+  k = k.replace(/\\n/g, '\n');
+
+  // Remove carriage returns (\r)
+  k = k.replace(/\r/g, '');
+
+  // If newlines were flattened into spaces or single line:
+  if (!k.includes('\n') && k.includes('BEGIN PRIVATE KEY')) {
+    const beginTag = '-----BEGIN PRIVATE KEY-----';
+    const endTag = '-----END PRIVATE KEY-----';
+    const sIdx = k.indexOf(beginTag);
+    const eIdx = k.indexOf(endTag);
+    if (sIdx > -1 && eIdx > -1) {
+      const b64 = k
+        .substring(sIdx + beginTag.length, eIdx)
+        .replace(/\s+/g, '')
+        .replace(/[^A-Za-z0-9+/=]/g, '');
+      const chunks = b64.match(/.{1,64}/g) || [b64];
+      k = `${beginTag}\n${chunks.join('\n')}\n${endTag}\n`;
+    }
+  }
+
+  return k.trim();
 }
 
 if (!admin.apps.length) {

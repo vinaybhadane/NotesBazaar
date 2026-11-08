@@ -42,6 +42,8 @@ function RegisterForm() {
       const code = err?.code || '';
       if (code === 'auth/email-already-in-use') {
         msg = 'An account with this email already exists. Please sign in instead.';
+      } else if (code === 'auth/unauthorized-domain') {
+        msg = 'This domain is not authorized in Firebase Console. Please add it under Authentication > Settings > Authorized domains.';
       } else if (code === 'auth/weak-password') {
         msg = 'Password is too weak. Please use at least 6 characters with mixed letters and numbers.';
       } else if (code === 'auth/invalid-email') {

@@ -41,6 +41,10 @@ function LoginForm() {
         code === 'auth/wrong-password'
       ) {
         msg = 'Invalid email or password. Please verify your credentials.';
+      } else if (code === 'auth/unauthorized-domain') {
+        msg = 'This domain is not authorized in Firebase Console. Please add it under Authentication > Settings > Authorized domains.';
+      } else if (code === 'auth/invalid-api-key' || code === 'auth/api-key-not-valid') {
+        msg = 'Invalid Firebase API Key. Please verify NEXT_PUBLIC_FIREBASE_API_KEY in Vercel Environment Variables.';
       } else if (code === 'auth/invalid-email') {
         msg = 'Please enter a valid email address.';
       } else if (code === 'auth/too-many-requests') {
