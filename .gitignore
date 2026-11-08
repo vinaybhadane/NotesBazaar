@@ -26,6 +26,9 @@
 .env.development.local
 .env.test.local
 .env.production.local
+*.env
+scripts/*.env
+scripts/build-vercel-env.mjs
 
 # Vercel
 .vercel
