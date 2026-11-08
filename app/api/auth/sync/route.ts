@@ -33,6 +33,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ user });
   } catch (error: any) {
+    console.error('[API /api/auth/sync Error]:', error);
     return NextResponse.json({ error: error.message || 'Server error' }, { status: 500 });
   }
 }

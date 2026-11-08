@@ -27,11 +27,18 @@ const hasAzureSqlConfig = Boolean(
 );
 
 let sqlPool: sql.ConnectionPool | null = null;
-let sqlPoolFailed = false;
+let lastSqlConnectAttempt = 0;
+const RETRY_INTERVAL_MS = 5000;
 
 async function getSqlPool(): Promise<sql.ConnectionPool | null> {
-  if (!hasAzureSqlConfig || sqlPoolFailed) return null;
-  if (sqlPool) return sqlPool;
+  if (!hasAzureSqlConfig) return null;
+  if (sqlPool && sqlPool.connected) return sqlPool;
+
+  const now = Date.now();
+  if (now - lastSqlConnectAttempt < RETRY_INTERVAL_MS) {
+    return null;
+  }
+  lastSqlConnectAttempt = now;
 
   try {
     let sqlConn = process.env.AZURE_SQL_CONNECTION_STRING?.trim();
@@ -59,13 +66,13 @@ async function getSqlPool(): Promise<sql.ConnectionPool | null> {
     return sqlPool;
   } catch (err) {
     console.warn('[Database] Could not connect to Azure SQL, falling back to local persistent storage:', (err as Error).message);
-    sqlPoolFailed = true;
     return null;
   }
 }
 
 // Local persistent JSON storage fallback
-const DATA_DIR = path.join(process.cwd(), '.data');
+const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const DATA_DIR = isServerless ? path.join('/tmp', '.data') : path.join(process.cwd(), '.data');
 const DATA_FILE = path.join(DATA_DIR, 'notesbazaar.json');
 
 interface LocalDbSchema {
@@ -125,18 +132,23 @@ function getInitialLocalData(): LocalDbSchema {
 }
 
 function readLocalData(): LocalDbSchema {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-  if (!fs.existsSync(DATA_FILE)) {
-    const init = getInitialLocalData();
-    fs.writeFileSync(DATA_FILE, JSON.stringify(init, null, 2), 'utf8');
-    return init;
-  }
   try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    if (!fs.existsSync(DATA_FILE)) {
+      const init = getInitialLocalData();
+      try {
+        fs.writeFileSync(DATA_FILE, JSON.stringify(init, null, 2), 'utf8');
+      } catch {
+        // Safe write ignore on read-only serverless disk
+      }
+      return init;
+    }
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
     return JSON.parse(raw);
-  } catch {
+  } catch (err) {
+    console.warn('[Database] Read local data fallback:', (err as Error).message);
     return getInitialLocalData();
   }
 }
@@ -322,10 +334,14 @@ async function getStore(): Promise<LocalDbSchema> {
 }
 
 function writeLocalData(data: LocalDbSchema): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[Database] Local file write skipped or failed (safe on serverless):', (err as Error).message);
   }
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf8');
   memoryCache = data;
   lastCacheSync = Date.now();
 }
@@ -563,6 +579,46 @@ export const db = {
   },
 
   async createProduct(product: Product): Promise<Product> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        await pool.request()
+          .input('id', sql.NVarChar(50), product.id)
+          .input('title', sql.NVarChar(255), product.title)
+          .input('slug', sql.NVarChar(200), product.slug)
+          .input('branch_id', sql.NVarChar(50), product.branch_id)
+          .input('year_id', sql.NVarChar(50), product.year_id)
+          .input('semester_id', sql.NVarChar(50), product.semester_id || null)
+          .input('subject_id', sql.NVarChar(50), product.subject_id)
+          .input('pattern_id', sql.NVarChar(50), product.pattern_id)
+          .input('short_description', sql.NVarChar(500), product.short_description || '')
+          .input('full_description', sql.NVarChar(sql.MAX), product.full_description || '')
+          .input('topics_covered', sql.NVarChar(sql.MAX), JSON.stringify(product.topics_covered || []))
+          .input('price_in_paise', sql.Int, product.price_in_paise)
+          .input('compare_at_price_in_paise', sql.Int, product.compare_at_price_in_paise || product.price_in_paise)
+          .input('publication_status', sql.NVarChar(50), product.publication_status)
+          .input('is_available', sql.Bit, product.is_available ? 1 : 0)
+          .input('is_coming_soon', sql.Bit, product.is_coming_soon ? 1 : 0)
+          .input('file_format', sql.NVarChar(20), product.file_format || 'PDF')
+          .input('page_count', sql.Int, product.page_count || 0)
+          .input('file_size_bytes', sql.BigInt, product.file_size_bytes || 0)
+          .query(`
+            INSERT INTO products (
+              id, title, slug, branch_id, year_id, semester_id, subject_id, pattern_id,
+              short_description, full_description, topics_covered, price_in_paise,
+              compare_at_price_in_paise, publication_status, is_available, is_coming_soon,
+              file_format, page_count, file_size_bytes
+            ) VALUES (
+              @id, @title, @slug, @branch_id, @year_id, @semester_id, @subject_id, @pattern_id,
+              @short_description, @full_description, @topics_covered, @price_in_paise,
+              @compare_at_price_in_paise, @publication_status, @is_available, @is_coming_soon,
+              @file_format, @page_count, @file_size_bytes
+            )
+          `);
+      } catch (dbErr) {
+        console.warn('[Database] Failed to insert product in Azure SQL:', dbErr);
+      }
+    }
     const data = await getStore();
     data.products.push(product);
     writeLocalData(data);
@@ -570,6 +626,60 @@ export const db = {
   },
 
   async updateProduct(id: string, updates: Partial<Product>): Promise<Product | null> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const req = pool.request().input('id', sql.NVarChar(50), id);
+        const sets: string[] = [];
+        if (updates.title !== undefined) {
+          req.input('title', sql.NVarChar(255), updates.title);
+          sets.push('title = @title');
+        }
+        if (updates.slug !== undefined) {
+          req.input('slug', sql.NVarChar(200), updates.slug);
+          sets.push('slug = @slug');
+        }
+        if (updates.short_description !== undefined) {
+          req.input('short_description', sql.NVarChar(500), updates.short_description);
+          sets.push('short_description = @short_description');
+        }
+        if (updates.full_description !== undefined) {
+          req.input('full_description', sql.NVarChar(sql.MAX), updates.full_description);
+          sets.push('full_description = @full_description');
+        }
+        if (updates.price_in_paise !== undefined) {
+          req.input('price_in_paise', sql.Int, updates.price_in_paise);
+          sets.push('price_in_paise = @price_in_paise');
+        }
+        if (updates.compare_at_price_in_paise !== undefined) {
+          req.input('compare_at_price_in_paise', sql.Int, updates.compare_at_price_in_paise);
+          sets.push('compare_at_price_in_paise = @compare_at_price_in_paise');
+        }
+        if (updates.publication_status !== undefined) {
+          req.input('publication_status', sql.NVarChar(50), updates.publication_status);
+          sets.push('publication_status = @publication_status');
+        }
+        if (typeof updates.is_available === 'boolean') {
+          req.input('is_available', sql.Bit, updates.is_available ? 1 : 0);
+          sets.push('is_available = @is_available');
+        }
+        if (typeof updates.is_coming_soon === 'boolean') {
+          req.input('is_coming_soon', sql.Bit, updates.is_coming_soon ? 1 : 0);
+          sets.push('is_coming_soon = @is_coming_soon');
+        }
+        if (updates.page_count !== undefined) {
+          req.input('page_count', sql.Int, updates.page_count);
+          sets.push('page_count = @page_count');
+        }
+        if (sets.length > 0) {
+          sets.push('updated_at = SYSUTCDATETIME()');
+          await req.query(`UPDATE products SET ${sets.join(', ')} WHERE id = @id`);
+        }
+      } catch (dbErr) {
+        console.warn('[Database] Failed to update product in Azure SQL:', dbErr);
+      }
+    }
+
     const data = await getStore();
     const idx = data.products.findIndex((p) => p.id === id);
     if (idx === -1) return null;
@@ -584,6 +694,21 @@ export const db = {
   },
 
   async deleteProduct(id: string): Promise<boolean> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        await pool.request()
+          .input('id', sql.NVarChar(50), id)
+          .query(`
+            DELETE FROM download_entitlements WHERE product_id = @id;
+            DELETE FROM order_items WHERE product_id = @id;
+            DELETE FROM product_files WHERE product_id = @id;
+            DELETE FROM products WHERE id = @id;
+          `);
+      } catch (dbErr) {
+        console.warn('[Database] Failed to delete product in Azure SQL:', dbErr);
+      }
+    }
     const data = await getStore();
     const initialLen = data.products.length;
     data.products = data.products.filter((p) => p.id !== id);
@@ -595,6 +720,45 @@ export const db = {
   // Orders & Checkout
   // ---------------------------------------------------------------------------
   async createOrder(order: Order, items: OrderItem[]): Promise<Order> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        await pool.request()
+          .input('id', sql.NVarChar(50), order.id)
+          .input('user_id', sql.NVarChar(50), order.user_id)
+          .input('order_number', sql.NVarChar(50), order.order_number)
+          .input('total_amount_in_paise', sql.Int, order.total_amount_in_paise)
+          .input('discount_amount_in_paise', sql.Int, order.discount_amount_in_paise)
+          .input('final_amount_in_paise', sql.Int, order.final_amount_in_paise)
+          .input('currency', sql.NVarChar(10), order.currency || 'INR')
+          .input('status', sql.NVarChar(50), order.status)
+          .input('razorpay_order_id', sql.NVarChar(100), order.razorpay_order_id || null)
+          .input('customer_email', sql.NVarChar(255), order.customer_email)
+          .input('customer_name', sql.NVarChar(255), order.customer_name || null)
+          .query(`
+            INSERT INTO orders (id, user_id, order_number, total_amount_in_paise, discount_amount_in_paise, final_amount_in_paise, currency, status, razorpay_order_id, customer_email, customer_name)
+            VALUES (@id, @user_id, @order_number, @total_amount_in_paise, @discount_amount_in_paise, @final_amount_in_paise, @currency, @status, @razorpay_order_id, @customer_email, @customer_name)
+          `);
+
+        for (const item of items) {
+          await pool.request()
+            .input('id', sql.NVarChar(50), item.id)
+            .input('order_id', sql.NVarChar(50), item.order_id)
+            .input('product_id', sql.NVarChar(50), item.product_id)
+            .input('quantity', sql.Int, item.quantity || 1)
+            .input('unit_price_in_paise', sql.Int, item.unit_price_in_paise)
+            .input('discount_amount_in_paise', sql.Int, item.discount_amount_in_paise || 0)
+            .input('final_price_in_paise', sql.Int, item.final_price_in_paise)
+            .query(`
+              INSERT INTO order_items (id, order_id, product_id, quantity, unit_price_in_paise, discount_amount_in_paise, final_price_in_paise)
+              VALUES (@id, @order_id, @product_id, @quantity, @unit_price_in_paise, @discount_amount_in_paise, @final_price_in_paise)
+            `);
+        }
+      } catch (dbErr) {
+        console.warn('[Database] Failed to insert order in Azure SQL:', dbErr);
+      }
+    }
+
     const data = await getStore();
     data.orders.push(order);
     for (const item of items) {
@@ -637,6 +801,25 @@ export const db = {
     status: Order['status'],
     razorpayPaymentId?: string
   ): Promise<Order | null> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        await pool.request()
+          .input('id', sql.NVarChar(50), orderId)
+          .input('status', sql.NVarChar(50), status)
+          .input('payment_id', sql.NVarChar(100), razorpayPaymentId || null)
+          .query(`
+            UPDATE orders 
+            SET status = @status, 
+                razorpay_payment_id = COALESCE(@payment_id, razorpay_payment_id),
+                updated_at = SYSUTCDATETIME() 
+            WHERE id = @id
+          `);
+      } catch (dbErr) {
+        console.warn('[Database] Failed to update order status in Azure SQL:', dbErr);
+      }
+    }
+
     const data = await getStore();
     const order = data.orders.find((o) => o.id === orderId);
     if (!order) return null;
@@ -690,6 +873,29 @@ export const db = {
   // Payments
   // ---------------------------------------------------------------------------
   async recordPayment(payment: Payment): Promise<Payment> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        await pool.request()
+          .input('id', sql.NVarChar(50), payment.id)
+          .input('order_id', sql.NVarChar(50), payment.order_id)
+          .input('razorpay_order_id', sql.NVarChar(100), payment.razorpay_order_id)
+          .input('razorpay_payment_id', sql.NVarChar(100), payment.razorpay_payment_id)
+          .input('razorpay_signature', sql.NVarChar(255), payment.razorpay_signature || null)
+          .input('amount_in_paise', sql.Int, payment.amount_in_paise)
+          .input('currency', sql.NVarChar(10), payment.currency || 'INR')
+          .input('status', sql.NVarChar(50), payment.status)
+          .input('method', sql.NVarChar(50), payment.method || null)
+          .query(`
+            IF NOT EXISTS (SELECT 1 FROM payments WHERE razorpay_payment_id = @razorpay_payment_id)
+              INSERT INTO payments (id, order_id, razorpay_order_id, razorpay_payment_id, razorpay_signature, amount_in_paise, currency, status, method)
+              VALUES (@id, @order_id, @razorpay_order_id, @razorpay_payment_id, @razorpay_signature, @amount_in_paise, @currency, @status, @method)
+          `);
+      } catch (dbErr) {
+        console.warn('[Database] Failed to insert payment in Azure SQL:', dbErr);
+      }
+    }
+
     const data = await getStore();
     const existing = data.payments.find((p) => p.razorpay_payment_id === payment.razorpay_payment_id);
     if (existing) return existing;
@@ -733,6 +939,26 @@ export const db = {
       granted_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
     };
+
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        await pool.request()
+          .input('id', sql.NVarChar(50), entitlement.id)
+          .input('user_id', sql.NVarChar(50), entitlement.user_id)
+          .input('product_id', sql.NVarChar(50), entitlement.product_id)
+          .input('order_id', sql.NVarChar(50), entitlement.order_id)
+          .input('is_active', sql.Bit, 1)
+          .query(`
+            IF NOT EXISTS (SELECT 1 FROM download_entitlements WHERE user_id = @user_id AND product_id = @product_id AND is_active = 1)
+              INSERT INTO download_entitlements (id, user_id, product_id, order_id, is_active)
+              VALUES (@id, @user_id, @product_id, @order_id, @is_active)
+          `);
+      } catch (dbErr) {
+        console.warn('[Database] Failed to insert download entitlement in Azure SQL:', dbErr);
+      }
+    }
+
     data.download_entitlements.push(entitlement);
     writeLocalData(data);
     return entitlement;
@@ -908,7 +1134,7 @@ export const db = {
   // ---------------------------------------------------------------------------
   async upsertUser(user: { firebase_uid: string; email: string; display_name?: string | null }): Promise<User> {
     const data = await getStore();
-    let u = data.users.find((item) => item.firebase_uid === user.firebase_uid);
+    let u = data.users.find((item) => item.firebase_uid === user.firebase_uid || (item.email && user.email && item.email.toLowerCase() === user.email.toLowerCase()));
     const adminEmail = (process.env.ADMIN_EMAIL || 'vinaybhadane06@gmail.com').toLowerCase();
     const isOwner = user.email.toLowerCase() === adminEmail;
 
@@ -926,10 +1152,36 @@ export const db = {
       data.users.push(u);
     } else {
       u.email = user.email;
+      if (user.firebase_uid && user.firebase_uid !== 'anon') u.firebase_uid = user.firebase_uid;
       if (user.display_name) u.display_name = user.display_name;
       if (isOwner) u.role = 'admin';
       u.updated_at = new Date().toISOString();
     }
+
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        await pool.request()
+          .input('id', sql.NVarChar(50), u.id)
+          .input('firebase_uid', sql.NVarChar(128), u.firebase_uid)
+          .input('email', sql.NVarChar(255), u.email)
+          .input('display_name', sql.NVarChar(255), u.display_name || null)
+          .input('role', sql.NVarChar(50), u.role)
+          .input('status', sql.NVarChar(50), u.status)
+          .query(`
+            IF EXISTS (SELECT 1 FROM users WHERE firebase_uid = @firebase_uid)
+              UPDATE users SET email = @email, display_name = COALESCE(@display_name, display_name), role = @role, status = @status, updated_at = SYSUTCDATETIME() WHERE firebase_uid = @firebase_uid
+            ELSE IF EXISTS (SELECT 1 FROM users WHERE email = @email)
+              UPDATE users SET firebase_uid = @firebase_uid, display_name = COALESCE(@display_name, display_name), role = @role, status = @status, updated_at = SYSUTCDATETIME() WHERE email = @email
+            ELSE
+              INSERT INTO users (id, firebase_uid, email, display_name, role, status)
+              VALUES (@id, @firebase_uid, @email, @display_name, @role, @status)
+          `);
+      } catch (dbErr) {
+        console.warn('[Database] Failed to upsert user in Azure SQL:', dbErr);
+      }
+    }
+
     writeLocalData(data);
     return u;
   },
@@ -958,6 +1210,25 @@ export const db = {
   },
 
   async updateSiteSettings(settings: Partial<SiteSettings>): Promise<SiteSettings> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        for (const [key, val] of Object.entries(settings)) {
+          await pool.request()
+            .input('setting_key', sql.NVarChar(100), key)
+            .input('setting_value', sql.NVarChar(sql.MAX), typeof val === 'object' ? JSON.stringify(val) : String(val))
+            .query(`
+              IF EXISTS (SELECT 1 FROM site_settings WHERE setting_key = @setting_key)
+                UPDATE site_settings SET setting_value = @setting_value, updated_at = SYSUTCDATETIME() WHERE setting_key = @setting_key
+              ELSE
+                INSERT INTO site_settings (setting_key, setting_value) VALUES (@setting_key, @setting_value)
+            `);
+        }
+      } catch (dbErr) {
+        console.warn('[Database] Failed to update site settings in Azure SQL:', dbErr);
+      }
+    }
+
     const data = await getStore();
     data.site_settings = { ...data.site_settings, ...settings };
     writeLocalData(data);
@@ -971,9 +1242,29 @@ export const db = {
     entity_id?: string;
     details?: string;
   }): Promise<void> {
+    const auditId = `audit_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        await pool.request()
+          .input('id', sql.NVarChar(50), auditId)
+          .input('admin_email', sql.NVarChar(255), params.admin_email)
+          .input('action', sql.NVarChar(100), params.action)
+          .input('entity_type', sql.NVarChar(50), params.entity_type)
+          .input('entity_id', sql.NVarChar(50), params.entity_id || null)
+          .input('details', sql.NVarChar(sql.MAX), params.details || null)
+          .query(`
+            INSERT INTO admin_audit_logs (id, admin_email, action, entity_type, entity_id, details)
+            VALUES (@id, @admin_email, @action, @entity_type, @entity_id, @details)
+          `);
+      } catch (dbErr) {
+        console.warn('[Database] Failed to log admin audit to Azure SQL:', dbErr);
+      }
+    }
+
     const data = await getStore();
     data.admin_audit_logs.push({
-      id: `audit_${Date.now()}`,
+      id: auditId,
       ...params,
       created_at: new Date().toISOString(),
     });

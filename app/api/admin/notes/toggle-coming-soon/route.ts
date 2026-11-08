@@ -30,7 +30,8 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, product: updated });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error('[API /api/admin/notes/toggle-coming-soon Error]:', error);
+    return NextResponse.json({ error: error.message || 'Failed to toggle status' }, { status: 500 });
   }
 }
 

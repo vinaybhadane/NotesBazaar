@@ -37,7 +37,8 @@ export async function PUT(req: NextRequest, { params }: Params) {
 
     return NextResponse.json({ product: updated });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error('[API /api/admin/notes/[id] PUT Error]:', error);
+    return NextResponse.json({ error: error.message || 'Failed to update note' }, { status: 500 });
   }
 }
 
@@ -56,7 +57,8 @@ export async function DELETE(req: NextRequest, { params }: Params) {
 
     return NextResponse.json({ success: deleted });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error('[API /api/admin/notes/[id] PUT Error]:', error);
+    return NextResponse.json({ error: error.message || 'Failed to update note' }, { status: 500 });
   }
 }
 
