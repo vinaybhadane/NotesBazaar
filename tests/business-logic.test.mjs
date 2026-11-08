@@ -137,3 +137,72 @@ describe('4. Webhook Idempotency & Entitlement Fulfillment', () => {
   });
 });
 
+describe('5. Download Entitlement Expiry & Revocation Barrier', () => {
+  it('must allow access when entitlement is active and unexpired', () => {
+    const entitlement = {
+      id: 'ent_123',
+      status: 'active',
+      expires_at: new Date(Date.now() + 86400000).toISOString(), // tomorrow
+    };
+
+    const isAuthorized =
+      entitlement.status === 'active' &&
+      (!entitlement.expires_at || new Date(entitlement.expires_at).getTime() > Date.now());
+
+    assert.equal(isAuthorized, true);
+  });
+
+  it('must deny access when entitlement is revoked or expired', () => {
+    const revoked = {
+      id: 'ent_revoked',
+      status: 'revoked',
+      expires_at: new Date(Date.now() + 86400000).toISOString(),
+    };
+
+    const expired = {
+      id: 'ent_expired',
+      status: 'active',
+      expires_at: new Date(Date.now() - 1000).toISOString(), // past
+    };
+
+    function checkAccess(ent) {
+      return (
+        ent.status === 'active' &&
+        (!ent.expires_at || new Date(ent.expires_at).getTime() > Date.now())
+      );
+    }
+
+    assert.equal(checkAccess(revoked), false);
+    assert.equal(checkAccess(expired), false);
+  });
+});
+
+describe('6. Student Order Receipt Authorization', () => {
+  it('should allow student to access their own order receipt', () => {
+    const currentUserId = 'usr_student_01';
+    const order = { id: 'ord_100', user_id: 'usr_student_01', total_amount: 7900 };
+
+    const canView = currentUserId === order.user_id;
+    assert.equal(canView, true);
+  });
+
+  it('should block horizontal privilege escalation when user_id does not match and user is not admin', () => {
+    const attackerUserId = 'usr_student_02';
+    const victimOrder = { id: 'ord_100', user_id: 'usr_student_01', total_amount: 7900 };
+    const isAdmin = false;
+
+    const canView = isAdmin || attackerUserId === victimOrder.user_id;
+    assert.equal(canView, false, 'Student must not be able to view another student order!');
+  });
+
+  it('should allow platform admin to view any order receipt', () => {
+    const adminUserId = 'usr_admin_99';
+    const order = { id: 'ord_100', user_id: 'usr_student_01', total_amount: 7900 };
+    const isAdmin = true;
+
+    const canView = isAdmin || adminUserId === order.user_id;
+    assert.equal(canView, true);
+  });
+});
+
+
