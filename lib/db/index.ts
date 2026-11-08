@@ -34,8 +34,13 @@ async function getSqlPool(): Promise<sql.ConnectionPool | null> {
   if (sqlPool) return sqlPool;
 
   try {
-    if (process.env.AZURE_SQL_CONNECTION_STRING) {
-      sqlPool = await new sql.ConnectionPool(process.env.AZURE_SQL_CONNECTION_STRING as any).connect();
+    let sqlConn = process.env.AZURE_SQL_CONNECTION_STRING?.trim();
+    if (sqlConn && ((sqlConn.startsWith('"') && sqlConn.endsWith('"')) || (sqlConn.startsWith("'") && sqlConn.endsWith("'")))) {
+      sqlConn = sqlConn.slice(1, -1).trim();
+    }
+
+    if (sqlConn) {
+      sqlPool = await new sql.ConnectionPool(sqlConn).connect();
     } else {
       const config: sql.config = {
         server: process.env.AZURE_SQL_SERVER || '',

@@ -20,7 +20,15 @@ function ensureLocalDirs() {
   }
 }
 
-const connectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
+let rawConn = process.env.AZURE_STORAGE_CONNECTION_STRING?.trim();
+if (
+  rawConn &&
+  ((rawConn.startsWith('"') && rawConn.endsWith('"')) ||
+    (rawConn.startsWith("'") && rawConn.endsWith("'")))
+) {
+  rawConn = rawConn.slice(1, -1).trim();
+}
+const connectionString = rawConn;
 let blobServiceClient: BlobServiceClient | null = null;
 
 if (connectionString) {

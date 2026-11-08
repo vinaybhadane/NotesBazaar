@@ -2,7 +2,17 @@ import * as admin from 'firebase-admin';
 
 function formatPrivateKey(key?: string): string | undefined {
   if (!key) return undefined;
-  return key.replace(/\\n/g, '\n');
+  let cleaned = key.trim();
+  // Strip outer quotes if pasted with quotes into environment variables
+  if (
+    (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+    (cleaned.startsWith("'") && cleaned.endsWith("'"))
+  ) {
+    cleaned = cleaned.slice(1, -1);
+  }
+  // Replace literal escaped newlines with actual newlines
+  cleaned = cleaned.replace(/\\n/g, '\n').replace(/\r/g, '');
+  return cleaned.trim();
 }
 
 if (!admin.apps.length) {
