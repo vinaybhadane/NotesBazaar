@@ -136,11 +136,193 @@ function readLocalData(): LocalDbSchema {
   }
 }
 
+
+// -----------------------------------------------------------------------------
+// In-Memory & Azure SQL Synchronized Data Store
+// -----------------------------------------------------------------------------
+let memoryCache: LocalDbSchema | null = null;
+let lastCacheSync = 0;
+const CACHE_TTL_MS = 15000; // 15 seconds TTL for high performance & fresh data
+
+async function getStore(): Promise<LocalDbSchema> {
+  const pool = await getSqlPool();
+  if (!pool) {
+    return readLocalData();
+  }
+
+  const now = Date.now();
+  if (memoryCache && now - lastCacheSync < CACHE_TTL_MS) {
+    return memoryCache;
+  }
+
+  try {
+    const [
+      branchesRes,
+      yearsRes,
+      patternsRes,
+      subjectsRes,
+      productsRes,
+      offersRes,
+      bannersRes,
+      settingsRes,
+      usersRes,
+      ordersRes,
+      itemsRes,
+      paymentsRes,
+      entitlementsRes,
+    ] = await Promise.all([
+      pool.request().query('SELECT * FROM branches WHERE is_active = 1 ORDER BY sort_order'),
+      pool.request().query('SELECT * FROM academic_years WHERE is_active = 1 ORDER BY sort_order'),
+      pool.request().query('SELECT * FROM patterns WHERE is_active = 1'),
+      pool.request().query('SELECT * FROM subjects WHERE is_active = 1'),
+      pool.request().query('SELECT * FROM products'),
+      pool.request().query('SELECT * FROM offers WHERE is_active = 1'),
+      pool.request().query('SELECT * FROM banners WHERE is_active = 1 ORDER BY display_order'),
+      pool.request().query('SELECT * FROM site_settings'),
+      pool.request().query('SELECT * FROM users'),
+      pool.request().query('SELECT * FROM orders ORDER BY created_at DESC'),
+      pool.request().query('SELECT * FROM order_items'),
+      pool.request().query('SELECT * FROM payments'),
+      pool.request().query('SELECT * FROM download_entitlements'),
+    ]);
+
+    const settingsObj: Record<string, any> = {};
+    for (const s of settingsRes.recordset) {
+      try {
+        settingsObj[s.setting_key] = JSON.parse(s.setting_value);
+      } catch {
+        settingsObj[s.setting_key] = s.setting_value;
+      }
+    }
+
+    const productsMapped: Product[] = productsRes.recordset.map((r: any) => ({
+      id: r.id,
+      title: r.title,
+      slug: r.slug,
+      branch_id: r.branch_id,
+      year_id: r.year_id,
+      semester_id: r.semester_id,
+      subject_id: r.subject_id,
+      pattern_id: r.pattern_id,
+      short_description: r.short_description || '',
+      full_description: r.full_description || r.short_description || '',
+      topics_covered: r.topics_covered ? (typeof r.topics_covered === 'string' ? JSON.parse(r.topics_covered) : r.topics_covered) : [],
+      price_in_paise: r.price_in_paise,
+      compare_at_price_in_paise: r.compare_at_price_in_paise || r.price_in_paise,
+      publication_status: r.publication_status,
+      is_available: Boolean(r.is_available),
+      is_coming_soon: Boolean(r.is_coming_soon),
+      file_format: r.file_format || 'PDF',
+      page_count: r.page_count || 0,
+      file_size_bytes: Number(r.file_size_bytes || 0),
+      created_at: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+      updated_at: r.updated_at ? new Date(r.updated_at).toISOString() : new Date().toISOString(),
+    }));
+
+    memoryCache = {
+      users: usersRes.recordset.map((u: any) => ({
+        id: u.id,
+        firebase_uid: u.firebase_uid,
+        email: u.email,
+        display_name: u.display_name,
+        role: u.role,
+        status: u.status,
+        created_at: u.created_at ? new Date(u.created_at).toISOString() : new Date().toISOString(),
+        updated_at: u.updated_at ? new Date(u.updated_at).toISOString() : new Date().toISOString(),
+      })),
+      branches: branchesRes.recordset,
+      academic_years: yearsRes.recordset,
+      patterns: patternsRes.recordset,
+      subjects: subjectsRes.recordset,
+      products: productsMapped,
+      orders: ordersRes.recordset.map((o: any) => ({
+        id: o.id,
+        user_id: o.user_id,
+        order_number: o.order_number || o.id,
+        total_amount_in_paise: o.total_amount_in_paise,
+        discount_amount_in_paise: o.discount_in_paise || 0,
+        final_amount_in_paise: o.total_amount_in_paise,
+        currency: o.currency || 'INR',
+        status: o.status,
+        razorpay_order_id: o.razorpay_order_id,
+        razorpay_payment_id: o.razorpay_payment_id,
+        customer_email: o.customer_email,
+        customer_name: o.customer_name,
+        created_at: o.created_at ? new Date(o.created_at).toISOString() : new Date().toISOString(),
+        updated_at: o.updated_at ? new Date(o.updated_at).toISOString() : new Date().toISOString(),
+      })),
+      order_items: itemsRes.recordset.map((it: any) => ({
+        id: it.id,
+        order_id: it.order_id,
+        product_id: it.product_id,
+        quantity: it.quantity,
+        unit_price_in_paise: it.price_in_paise,
+        discount_amount_in_paise: 0,
+        final_price_in_paise: it.price_in_paise,
+        product_title: it.product_title,
+      })),
+      payments: paymentsRes.recordset,
+      webhook_events: [],
+      download_entitlements: entitlementsRes.recordset.map((e: any) => ({
+        id: e.id,
+        user_id: e.user_id,
+        product_id: e.product_id,
+        order_id: e.order_id,
+        status: e.is_active ? 'active' : 'revoked',
+        granted_at: e.created_at ? new Date(e.created_at).toISOString() : new Date().toISOString(),
+        expires_at: e.expires_at ? new Date(e.expires_at).toISOString() : null,
+        created_at: e.created_at ? new Date(e.created_at).toISOString() : new Date().toISOString(),
+      })),
+      download_audit_logs: [],
+      banners: bannersRes.recordset.map((b: any) => ({
+        id: b.id,
+        title: b.title,
+        subtitle: b.subtitle,
+        badge_text: b.badge_text || undefined,
+        cta_label: b.cta_label || 'View',
+        cta_url: b.cta_url || '/notes',
+        is_active: Boolean(b.is_active),
+        display_order: b.display_order,
+        created_at: b.created_at ? new Date(b.created_at).toISOString() : new Date().toISOString(),
+        updated_at: b.updated_at ? new Date(b.updated_at).toISOString() : new Date().toISOString(),
+      })),
+      offers: offersRes.recordset.map((o: any) => ({
+        id: o.id,
+        code: o.code,
+        title: o.title,
+        description: o.description,
+        discount_type: o.discount_type,
+        discount_value: o.discount_value,
+        min_order_amount_in_paise: o.min_order_amount_in_paise || 0,
+        max_discount_in_paise: o.max_discount_in_paise,
+        max_uses: o.max_uses,
+        current_uses: o.current_uses || 0,
+        per_user_limit: o.per_user_limit || 1,
+        start_at: o.start_at ? new Date(o.start_at).toISOString() : new Date().toISOString(),
+        end_at: o.end_at ? new Date(o.end_at).toISOString() : new Date(Date.now() + 31536000000).toISOString(),
+        is_active: Boolean(o.is_active),
+      })),
+      notifications: [],
+      notification_campaigns: [],
+      admin_audit_logs: [],
+      site_settings: settingsObj,
+    };
+
+    lastCacheSync = now;
+    return memoryCache;
+  } catch (err) {
+    console.warn('[Database] Azure SQL query error, falling back to local file:', (err as Error).message);
+    return readLocalData();
+  }
+}
+
 function writeLocalData(data: LocalDbSchema): void {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf8');
+  memoryCache = data;
+  lastCacheSync = Date.now();
 }
 
 export const db = {
@@ -164,12 +346,12 @@ export const db = {
   // Branches
   // ---------------------------------------------------------------------------
   async getBranches(): Promise<Branch[]> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.branches.filter((b) => b.is_active).sort((a, b) => a.sort_order - b.sort_order);
   },
 
   async getBranchBySlug(slug: string): Promise<Branch | null> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.branches.find((b) => b.slug === slug && b.is_active) || null;
   },
 
@@ -177,12 +359,12 @@ export const db = {
   // Academic Years
   // ---------------------------------------------------------------------------
   async getAcademicYears(): Promise<AcademicYear[]> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.academic_years.filter((y) => y.is_active).sort((a, b) => a.sort_order - b.sort_order);
   },
 
   async getYearBySlug(slug: string): Promise<AcademicYear | null> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.academic_years.find((y) => y.slug === slug && y.is_active) || null;
   },
 
@@ -190,7 +372,7 @@ export const db = {
   // Patterns
   // ---------------------------------------------------------------------------
   async getPatterns(): Promise<Pattern[]> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.patterns.filter((p) => p.is_active);
   },
 
@@ -198,7 +380,7 @@ export const db = {
   // Subjects
   // ---------------------------------------------------------------------------
   async getSubjects(filter?: { branch_id?: string; year_id?: string }): Promise<Subject[]> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.subjects.filter((s) => {
       if (!s.is_active) return false;
       if (filter?.branch_id && s.branch_id !== filter.branch_id) return false;
@@ -208,7 +390,7 @@ export const db = {
   },
 
   async getSubjectBySlug(slug: string): Promise<Subject | null> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.subjects.find((s) => s.slug === slug && s.is_active) || null;
   },
 
@@ -230,7 +412,7 @@ export const db = {
     limit?: number;
     offset?: number;
   }): Promise<{ products: Product[]; total: number }> {
-    const data = readLocalData();
+    const data = await getStore();
     let items = [...data.products];
 
     // Branch slug filter
@@ -338,7 +520,7 @@ export const db = {
   },
 
   async getProductBySlug(slug: string): Promise<Product | null> {
-    const data = readLocalData();
+    const data = await getStore();
     const p = data.products.find((item) => item.slug === slug);
     if (!p) return null;
 
@@ -357,7 +539,7 @@ export const db = {
   },
 
   async getProductById(id: string): Promise<Product | null> {
-    const data = readLocalData();
+    const data = await getStore();
     const p = data.products.find((item) => item.id === id);
     if (!p) return null;
 
@@ -376,14 +558,14 @@ export const db = {
   },
 
   async createProduct(product: Product): Promise<Product> {
-    const data = readLocalData();
+    const data = await getStore();
     data.products.push(product);
     writeLocalData(data);
     return product;
   },
 
   async updateProduct(id: string, updates: Partial<Product>): Promise<Product | null> {
-    const data = readLocalData();
+    const data = await getStore();
     const idx = data.products.findIndex((p) => p.id === id);
     if (idx === -1) return null;
 
@@ -397,7 +579,7 @@ export const db = {
   },
 
   async deleteProduct(id: string): Promise<boolean> {
-    const data = readLocalData();
+    const data = await getStore();
     const initialLen = data.products.length;
     data.products = data.products.filter((p) => p.id !== id);
     writeLocalData(data);
@@ -408,7 +590,7 @@ export const db = {
   // Orders & Checkout
   // ---------------------------------------------------------------------------
   async createOrder(order: Order, items: OrderItem[]): Promise<Order> {
-    const data = readLocalData();
+    const data = await getStore();
     data.orders.push(order);
     for (const item of items) {
       data.order_items.push(item);
@@ -418,7 +600,7 @@ export const db = {
   },
 
   async getOrderById(id: string): Promise<Order | null> {
-    const data = readLocalData();
+    const data = await getStore();
     const order = data.orders.find((o) => o.id === id);
     if (!order) return null;
 
@@ -439,7 +621,7 @@ export const db = {
   },
 
   async getOrderByRazorpayOrderId(rpOrderId: string): Promise<Order | null> {
-    const data = readLocalData();
+    const data = await getStore();
     const order = data.orders.find((o) => o.razorpay_order_id === rpOrderId);
     if (!order) return null;
     return this.getOrderById(order.id);
@@ -450,7 +632,7 @@ export const db = {
     status: Order['status'],
     razorpayPaymentId?: string
   ): Promise<Order | null> {
-    const data = readLocalData();
+    const data = await getStore();
     const order = data.orders.find((o) => o.id === orderId);
     if (!order) return null;
 
@@ -464,7 +646,7 @@ export const db = {
   },
 
   async getOrdersByUser(userId: string): Promise<Order[]> {
-    const data = readLocalData();
+    const data = await getStore();
     const userOrders = data.orders
       .filter((o) => o.user_id === userId)
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -483,7 +665,7 @@ export const db = {
   },
 
   async getAllOrders(): Promise<Order[]> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.orders
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       .map((o) => {
@@ -503,7 +685,7 @@ export const db = {
   // Payments
   // ---------------------------------------------------------------------------
   async recordPayment(payment: Payment): Promise<Payment> {
-    const data = readLocalData();
+    const data = await getStore();
     const existing = data.payments.find((p) => p.razorpay_payment_id === payment.razorpay_payment_id);
     if (existing) return existing;
 
@@ -513,12 +695,12 @@ export const db = {
   },
 
   async isWebhookProcessed(eventId: string): Promise<boolean> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.webhook_events.some((ev) => ev.event_id === eventId);
   },
 
   async recordWebhookProcessed(eventId: string): Promise<void> {
-    const data = readLocalData();
+    const data = await getStore();
     data.webhook_events.push({
       id: `wh_${Date.now()}`,
       event_id: eventId,
@@ -531,7 +713,7 @@ export const db = {
   // Download Entitlements
   // ---------------------------------------------------------------------------
   async createEntitlement(userId: string, productId: string, orderId: string): Promise<DownloadEntitlement> {
-    const data = readLocalData();
+    const data = await getStore();
     const existing = data.download_entitlements.find(
       (e) => e.user_id === userId && e.product_id === productId && e.status === 'active'
     );
@@ -552,7 +734,7 @@ export const db = {
   },
 
   async getEntitlementsByUser(userId: string): Promise<DownloadEntitlement[]> {
-    const data = readLocalData();
+    const data = await getStore();
     const list = data.download_entitlements.filter((e) => e.user_id === userId && e.status === 'active');
     return list.map((e) => {
       const prod = data.products.find((p) => p.id === e.product_id);
@@ -564,7 +746,7 @@ export const db = {
   },
 
   async getEntitlementById(entitlementId: string): Promise<DownloadEntitlement | null> {
-    const data = readLocalData();
+    const data = await getStore();
     const e = data.download_entitlements.find((item) => item.id === entitlementId);
     if (!e) return null;
     const prod = data.products.find((p) => p.id === e.product_id);
@@ -575,7 +757,7 @@ export const db = {
   },
 
   async hasEntitlement(userId: string, productId: string): Promise<boolean> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.download_entitlements.some(
       (e) => e.user_id === userId && e.product_id === productId && e.status === 'active'
     );
@@ -589,7 +771,7 @@ export const db = {
     user_agent?: string;
     status: 'granted' | 'denied';
   }): Promise<void> {
-    const data = readLocalData();
+    const data = await getStore();
     data.download_audit_logs.push({
       id: `dl_log_${Date.now()}`,
       ...params,
@@ -602,7 +784,7 @@ export const db = {
   // Banners & Offers
   // ---------------------------------------------------------------------------
   async getActiveBanners(): Promise<Banner[]> {
-    const data = readLocalData();
+    const data = await getStore();
     const now = new Date().getTime();
     return data.banners
       .filter((b) => {
@@ -615,19 +797,19 @@ export const db = {
   },
 
   async getAllBanners(): Promise<Banner[]> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.banners;
   },
 
   async createBanner(banner: Banner): Promise<Banner> {
-    const data = readLocalData();
+    const data = await getStore();
     data.banners.push(banner);
     writeLocalData(data);
     return banner;
   },
 
   async updateBanner(id: string, updates: Partial<Banner>): Promise<Banner | null> {
-    const data = readLocalData();
+    const data = await getStore();
     const idx = data.banners.findIndex((b) => b.id === id);
     if (idx === -1) return null;
     data.banners[idx] = { ...data.banners[idx], ...updates, updated_at: new Date().toISOString() };
@@ -636,7 +818,7 @@ export const db = {
   },
 
   async deleteBanner(id: string): Promise<boolean> {
-    const data = readLocalData();
+    const data = await getStore();
     const len = data.banners.length;
     data.banners = data.banners.filter((b) => b.id !== id);
     writeLocalData(data);
@@ -644,7 +826,7 @@ export const db = {
   },
 
   async getActiveOffers(): Promise<Offer[]> {
-    const data = readLocalData();
+    const data = await getStore();
     const now = new Date().getTime();
     return data.offers.filter((o) => {
       if (!o.is_active) return false;
@@ -656,7 +838,7 @@ export const db = {
   },
 
   async getOfferByCode(code: string): Promise<Offer | null> {
-    const data = readLocalData();
+    const data = await getStore();
     const offer = data.offers.find((o) => o.code.toUpperCase() === code.toUpperCase() && o.is_active);
     if (!offer) return null;
 
@@ -669,7 +851,7 @@ export const db = {
   },
 
   async createOffer(offer: Offer): Promise<Offer> {
-    const data = readLocalData();
+    const data = await getStore();
     data.offers.push(offer);
     writeLocalData(data);
     return offer;
@@ -679,14 +861,14 @@ export const db = {
   // Notifications
   // ---------------------------------------------------------------------------
   async getNotificationsByUser(userId: string): Promise<Notification[]> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.notifications
       .filter((n) => n.user_id === userId)
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   },
 
   async markNotificationRead(id: string, userId: string): Promise<boolean> {
-    const data = readLocalData();
+    const data = await getStore();
     const n = data.notifications.find((item) => item.id === id && item.user_id === userId);
     if (!n) return false;
     n.is_read = true;
@@ -696,21 +878,21 @@ export const db = {
   },
 
   async sendNotification(notification: Notification): Promise<Notification> {
-    const data = readLocalData();
+    const data = await getStore();
     data.notifications.push(notification);
     writeLocalData(data);
     return notification;
   },
 
   async createNotificationCampaign(campaign: NotificationCampaign): Promise<NotificationCampaign> {
-    const data = readLocalData();
+    const data = await getStore();
     data.notification_campaigns.push(campaign);
     writeLocalData(data);
     return campaign;
   },
 
   async getNotificationCampaigns(): Promise<NotificationCampaign[]> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.notification_campaigns.sort(
       (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     );
@@ -720,7 +902,7 @@ export const db = {
   // Users & Admin Authorization
   // ---------------------------------------------------------------------------
   async upsertUser(user: { firebase_uid: string; email: string; display_name?: string | null }): Promise<User> {
-    const data = readLocalData();
+    const data = await getStore();
     let u = data.users.find((item) => item.firebase_uid === user.firebase_uid);
     const adminEmail = (process.env.ADMIN_EMAIL || 'vinaybhadane06@gmail.com').toLowerCase();
     const isOwner = user.email.toLowerCase() === adminEmail;
@@ -748,17 +930,17 @@ export const db = {
   },
 
   async getUserByFirebaseUid(uid: string): Promise<User | null> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.users.find((u) => u.firebase_uid === uid) || null;
   },
 
   async getUserByEmail(email: string): Promise<User | null> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.users.find((u) => u.email.toLowerCase() === email.toLowerCase()) || null;
   },
 
   async getAllUsers(): Promise<User[]> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.users.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   },
 
@@ -766,12 +948,12 @@ export const db = {
   // Settings & Audit
   // ---------------------------------------------------------------------------
   async getSiteSettings(): Promise<SiteSettings> {
-    const data = readLocalData();
+    const data = await getStore();
     return data.site_settings as SiteSettings;
   },
 
   async updateSiteSettings(settings: Partial<SiteSettings>): Promise<SiteSettings> {
-    const data = readLocalData();
+    const data = await getStore();
     data.site_settings = { ...data.site_settings, ...settings };
     writeLocalData(data);
     return data.site_settings as SiteSettings;
@@ -784,7 +966,7 @@ export const db = {
     entity_id?: string;
     details?: string;
   }): Promise<void> {
-    const data = readLocalData();
+    const data = await getStore();
     data.admin_audit_logs.push({
       id: `audit_${Date.now()}`,
       ...params,
@@ -794,7 +976,7 @@ export const db = {
   },
 
   async getAdminStats() {
-    const data = readLocalData();
+    const data = await getStore();
     const totalPublished = data.products.filter((p) => p.publication_status === 'published').length;
     const totalDrafts = data.products.filter((p) => p.publication_status === 'draft').length;
     const totalComingSoon = data.products.filter((p) => p.is_coming_soon).length;
