@@ -9,6 +9,18 @@ function formatPrivateKey(key?: string): string | undefined {
     k = k.substring('FIREBASE_ADMIN_PRIVATE_KEY='.length).trim();
   }
 
+  // Check if key was base64 encoded
+  if (!k.includes('BEGIN PRIVATE KEY')) {
+    try {
+      const decoded = Buffer.from(k, 'base64').toString('utf8');
+      if (decoded.includes('BEGIN PRIVATE KEY')) {
+        k = decoded.trim();
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   // Remove surrounding double or single quotes repeatedly
   while (
     (k.startsWith('"') && k.endsWith('"')) ||
