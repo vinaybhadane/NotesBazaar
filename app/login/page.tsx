@@ -22,15 +22,35 @@ function LoginForm() {
 
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email || !password) return;
+    const cleanEmail = email.trim();
+    if (!cleanEmail || !password) return;
 
     setLoading(true);
     try {
-      await signInWithEmail(email, password);
+      await signInWithEmail(cleanEmail, password);
       toast.success('Signed in successfully!');
       router.push(redirectUrl);
+      router.refresh();
     } catch (err: any) {
-      toast.error(err.message || 'Invalid email or password.');
+      console.error('Login error:', err);
+      let msg = 'Invalid email or password.';
+      const code = err?.code || '';
+      if (
+        code === 'auth/invalid-credential' ||
+        code === 'auth/user-not-found' ||
+        code === 'auth/wrong-password'
+      ) {
+        msg = 'Invalid email or password. Please verify your credentials.';
+      } else if (code === 'auth/invalid-email') {
+        msg = 'Please enter a valid email address.';
+      } else if (code === 'auth/too-many-requests') {
+        msg = 'Access temporarily disabled due to multiple failed login attempts. Please try again later or reset password.';
+      } else if (code === 'auth/user-disabled') {
+        msg = 'This student account has been disabled. Please contact support.';
+      } else if (err?.message) {
+        msg = err.message.replace(/^Firebase:\s*/i, '');
+      }
+      toast.error(msg);
     } finally {
       setLoading(false);
     }

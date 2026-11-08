@@ -22,7 +22,8 @@ function RegisterForm() {
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email || !password) return;
+    const cleanEmail = email.trim();
+    if (!cleanEmail || !password) return;
 
     if (password.length < 6) {
       toast.error('Password must be at least 6 characters.');
@@ -31,11 +32,24 @@ function RegisterForm() {
 
     setLoading(true);
     try {
-      await signUpWithEmail(email, password, name);
+      await signUpWithEmail(cleanEmail, password, name.trim());
       toast.success('Account created successfully!');
       router.push(redirectUrl);
+      router.refresh();
     } catch (err: any) {
-      toast.error(err.message || 'Registration failed.');
+      console.error('Registration error:', err);
+      let msg = 'Registration failed.';
+      const code = err?.code || '';
+      if (code === 'auth/email-already-in-use') {
+        msg = 'An account with this email already exists. Please sign in instead.';
+      } else if (code === 'auth/weak-password') {
+        msg = 'Password is too weak. Please use at least 6 characters with mixed letters and numbers.';
+      } else if (code === 'auth/invalid-email') {
+        msg = 'Please enter a valid email address.';
+      } else if (err?.message) {
+        msg = err.message.replace(/^Firebase:\s*/i, '');
+      }
+      toast.error(msg);
     } finally {
       setLoading(false);
     }

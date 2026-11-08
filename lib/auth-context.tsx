@@ -9,6 +9,7 @@ import {
   createUserWithEmailAndPassword,
   signOut,
   sendPasswordResetEmail,
+  updateProfile,
 } from 'firebase/auth';
 import { auth, googleProvider } from '@/lib/firebase/client';
 import { User } from '@/lib/types';
@@ -54,6 +55,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
+          uid: fbUser.uid,
           email: fbUser.email,
           displayName: fbUser.displayName,
         }),
@@ -95,15 +97,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signInWithEmail = async (email: string, pass: string) => {
-    const result = await signInWithEmailAndPassword(auth, email, pass);
+    const result = await signInWithEmailAndPassword(auth, email.trim(), pass);
     if (result.user) {
       await syncUserWithBackend(result.user);
     }
   };
 
   const signUpWithEmail = async (email: string, pass: string, name?: string) => {
-    const result = await createUserWithEmailAndPassword(auth, email, pass);
+    const result = await createUserWithEmailAndPassword(auth, email.trim(), pass);
     if (result.user) {
+      if (name) {
+        try {
+          await updateProfile(result.user, { displayName: name.trim() });
+        } catch {
+          // ignore profile update failure
+        }
+      }
       await syncUserWithBackend(result.user);
     }
   };

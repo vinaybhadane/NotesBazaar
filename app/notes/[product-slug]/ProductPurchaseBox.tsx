@@ -30,6 +30,8 @@ export default function ProductPurchaseBox({ product }: ProductPurchaseBoxProps)
   const [initiatingCheckout, setInitiatingCheckout] = useState(false);
   const [notifyEmail, setNotifyEmail] = useState('');
   const [notifySubmitted, setNotifySubmitted] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewPage, setPreviewPage] = useState(1);
 
   const isComingSoon = product.is_coming_soon;
   const originalPricePaise = product.price_in_paise;
@@ -261,6 +263,16 @@ export default function ProductPurchaseBox({ product }: ProductPurchaseBoxProps)
         </Link>
       )}
 
+      {/* Sample Preview Button (Available even if Coming Soon) */}
+      <button
+        type="button"
+        onClick={() => setPreviewOpen(true)}
+        className="w-full py-2.5 px-4 rounded-2xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-800 text-xs font-bold transition-colors flex items-center justify-center gap-2"
+      >
+        <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+        <span>Preview Sample Pages</span>
+      </button>
+
       {/* Assurance / Trust Points */}
       <div className="pt-3 border-t border-slate-100 space-y-2.5 text-xs text-slate-600">
         <div className="flex items-center gap-2.5">
@@ -272,6 +284,169 @@ export default function ProductPurchaseBox({ product }: ProductPurchaseBoxProps)
           <span>Verified Razorpay payment gateway</span>
         </div>
       </div>
+
+      {/* Sample Preview Modal */}
+      {previewOpen && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 sm:p-8 shadow-2xl border border-slate-200 space-y-4 max-h-[90vh] flex flex-col animate-in fade-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div>
+                <span className="pill-badge pill-badge-yellow text-[10px] mb-1 inline-block">
+                  SAMPLE PREVIEW · PAGE {previewPage} OF 3
+                </span>
+                <h3 className="text-sm font-black text-slate-950 line-clamp-1">
+                  {product.title}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewOpen(false)}
+                className="p-1.5 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-800 transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Document Preview Sheet with Diagonal Watermark */}
+            <div className="flex-1 overflow-y-auto bg-slate-50 border border-slate-200 rounded-2xl p-6 sm:p-8 relative min-h-[320px]">
+              {/* Watermark overlay */}
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none opacity-[0.08] rotate-[-25deg]">
+                <span className="text-4xl sm:text-5xl font-black text-slate-900 text-center tracking-widest uppercase">
+                  NotesBazaar Sample Preview
+                </span>
+              </div>
+
+              {previewPage === 1 && (
+                <div className="space-y-4 text-xs text-slate-700 leading-relaxed relative z-10">
+                  <div className="border-b border-slate-200 pb-3">
+                    <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider block">
+                      SPPU 2024 Pattern Curriculum
+                    </span>
+                    <h4 className="text-base font-black text-slate-900 mt-0.5">
+                      {product.title}
+                    </h4>
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      Branch: {product.branch_name || 'Engineering'} · {product.year_name || 'SE & TE'}
+                    </p>
+                  </div>
+
+                  <div>
+                    <h5 className="font-bold text-slate-950 mb-1">Course Objectives & Scope:</h5>
+                    <p className="text-slate-600">
+                      This official revision guide is structured unit-wise according to the Savitribai Phule Pune University (SPPU) 2024 Pattern. Each module is cross-referenced with previous in-sem and end-sem exam distributions.
+                    </p>
+                  </div>
+
+                  <div>
+                    <h5 className="font-bold text-slate-950 mb-1">Key Modules Breakdown:</h5>
+                    <ul className="list-disc pl-5 space-y-1 text-slate-600">
+                      {product.topics_covered?.slice(0, 4).map((t, i) => (
+                        <li key={i}>{t}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+              {previewPage === 2 && (
+                <div className="space-y-4 text-xs text-slate-700 leading-relaxed relative z-10">
+                  <div className="border-b border-slate-200 pb-2">
+                    <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider block">
+                      Unit 1 Summary & Theoretical Framework
+                    </span>
+                    <h4 className="text-sm font-black text-slate-900">
+                      Core Foundations & Definitions
+                    </h4>
+                  </div>
+
+                  <div className="p-3.5 bg-white rounded-xl border border-slate-200 space-y-2">
+                    <span className="font-bold text-slate-900 block text-[11px]">
+                      Concept Summary & High-Yield Exam Note:
+                    </span>
+                    <p className="text-slate-600">
+                      Standard syllabus derivations, time and space complexity bounds, and step-by-step algorithm traces formatted specifically for clear handwritten presentation in university answer sheets.
+                    </p>
+                  </div>
+
+                  <p className="text-[11px] text-slate-500 italic">
+                    [Diagram and formal mathematical proofs are fully rendered in the complete 60+ page document]
+                  </p>
+                </div>
+              )}
+
+              {previewPage === 3 && (
+                <div className="space-y-4 text-xs text-slate-700 leading-relaxed relative z-10">
+                  <div className="border-b border-slate-200 pb-2">
+                    <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider block">
+                      Solved Practice Problems
+                    </span>
+                    <h4 className="text-sm font-black text-slate-900">
+                      Previous Exam Pattern Analysis
+                    </h4>
+                  </div>
+
+                  <div className="p-3.5 bg-white rounded-xl border border-slate-200 space-y-1.5">
+                    <span className="font-bold text-slate-900 block text-[11px]">
+                      Sample Question & Complete Solution Trace:
+                    </span>
+                    <p className="text-slate-600">
+                      Includes step-by-step analytical breakdowns, state transition mappings, and common student errors identified during evaluation.
+                    </p>
+                  </div>
+
+                  <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-900 text-center text-xs font-semibold">
+                    ⭐ Complete document includes all 6 syllabus units, over 60+ pages, and quick revision formula cheat-sheets.
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Controls & CTA */}
+            <div className="flex flex-col sm:flex-row items-center justify-between pt-2 border-t border-slate-100 gap-3">
+              <div className="flex items-center gap-1.5">
+                {[1, 2, 3].map((page) => (
+                  <button
+                    key={page}
+                    type="button"
+                    onClick={() => setPreviewPage(page)}
+                    className={`w-7 h-7 rounded-full text-xs font-bold transition-all ${
+                      previewPage === page
+                        ? 'bg-slate-950 text-white'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    {page}
+                  </button>
+                ))}
+                <span className="text-[11px] text-slate-400 ml-2">Sample Page</span>
+              </div>
+
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <button
+                  type="button"
+                  onClick={() => setPreviewOpen(false)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900"
+                >
+                  Close Preview
+                </button>
+                {!isComingSoon && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPreviewOpen(false);
+                      handleProceedToCheckout();
+                    }}
+                    className="px-5 py-2 rounded-full bg-[#FFE500] hover:bg-amber-400 text-slate-950 text-xs font-black transition-all shadow-sm flex-1 sm:flex-none text-center"
+                  >
+                    Get Full Notes (₹{priceRupees})
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
