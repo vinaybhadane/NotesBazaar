@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "test": "node --test",
+    "test:azure": "node scripts/test-azure-connection.mjs",
     "seed": "node scripts/seed.mjs"
   },
   "dependencies": {
