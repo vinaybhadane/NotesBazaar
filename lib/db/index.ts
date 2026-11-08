@@ -1056,6 +1056,11 @@ export const db = {
     return data.banners.length < len;
   },
 
+  async getAllOffers(): Promise<Offer[]> {
+    const data = await getStore();
+    return data.offers;
+  },
+
   async getActiveOffers(): Promise<Offer[]> {
     const data = await getStore();
     const now = new Date().getTime();
@@ -1082,10 +1087,98 @@ export const db = {
   },
 
   async createOffer(offer: Offer): Promise<Offer> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        await pool.request()
+          .input('id', sql.NVarChar(50), offer.id)
+          .input('code', sql.NVarChar(50), offer.code)
+          .input('title', sql.NVarChar(150), offer.title)
+          .input('description', sql.NVarChar(sql.MAX), offer.description || null)
+          .input('discount_type', sql.NVarChar(20), offer.discount_type)
+          .input('discount_value', sql.Int, offer.discount_value)
+          .input('min_order_amount_in_paise', sql.Int, offer.min_order_amount_in_paise || 0)
+          .input('max_discount_in_paise', sql.Int, offer.max_discount_in_paise || null)
+          .input('max_uses', sql.Int, offer.max_uses || null)
+          .input('current_uses', sql.Int, offer.current_uses || 0)
+          .input('per_user_limit', sql.Int, offer.per_user_limit || 1)
+          .input('is_active', sql.Bit, offer.is_active ? 1 : 0)
+          .query(`
+            INSERT INTO offers (id, code, title, description, discount_type, discount_value, min_order_amount_in_paise, max_discount_in_paise, max_uses, current_uses, per_user_limit, is_active)
+            VALUES (@id, @code, @title, @description, @discount_type, @discount_value, @min_order_amount_in_paise, @max_discount_in_paise, @max_uses, @current_uses, @per_user_limit, @is_active)
+          `);
+      } catch (dbErr) {
+        console.warn('[Database] Failed to insert offer in Azure SQL:', dbErr);
+      }
+    }
+
     const data = await getStore();
     data.offers.push(offer);
     writeLocalData(data);
     return offer;
+  },
+
+  async updateOffer(id: string, updates: Partial<Offer>): Promise<Offer | null> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const req = pool.request().input('id', sql.NVarChar(50), id);
+        const sets: string[] = [];
+        if (updates.max_uses !== undefined) {
+          req.input('max_uses', sql.Int, updates.max_uses);
+          sets.push('max_uses = @max_uses');
+        }
+        if (updates.per_user_limit !== undefined) {
+          req.input('per_user_limit', sql.Int, updates.per_user_limit);
+          sets.push('per_user_limit = @per_user_limit');
+        }
+        if (typeof updates.is_active === 'boolean') {
+          req.input('is_active', sql.Bit, updates.is_active ? 1 : 0);
+          sets.push('is_active = @is_active');
+        }
+        if (updates.min_order_amount_in_paise !== undefined) {
+          req.input('min_order_amount_in_paise', sql.Int, updates.min_order_amount_in_paise);
+          sets.push('min_order_amount_in_paise = @min_order_amount_in_paise');
+        }
+        if (updates.max_discount_in_paise !== undefined) {
+          req.input('max_discount_in_paise', sql.Int, updates.max_discount_in_paise);
+          sets.push('max_discount_in_paise = @max_discount_in_paise');
+        }
+        if (sets.length > 0) {
+          sets.push('updated_at = SYSUTCDATETIME()');
+          await req.query(`UPDATE offers SET ${sets.join(', ')} WHERE id = @id`);
+        }
+      } catch (dbErr) {
+        console.warn('[Database] Failed to update offer in Azure SQL:', dbErr);
+      }
+    }
+
+    const data = await getStore();
+    const idx = data.offers.findIndex((o) => o.id === id);
+    if (idx === -1) return null;
+
+    data.offers[idx] = { ...data.offers[idx], ...updates };
+    writeLocalData(data);
+    return data.offers[idx];
+  },
+
+  async deleteOffer(id: string): Promise<boolean> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        await pool.request()
+          .input('id', sql.NVarChar(50), id)
+          .query('DELETE FROM offers WHERE id = @id');
+      } catch (dbErr) {
+        console.warn('[Database] Failed to delete offer in Azure SQL:', dbErr);
+      }
+    }
+
+    const data = await getStore();
+    const len = data.offers.length;
+    data.offers = data.offers.filter((o) => o.id !== id);
+    writeLocalData(data);
+    return data.offers.length < len;
   },
 
   // ---------------------------------------------------------------------------

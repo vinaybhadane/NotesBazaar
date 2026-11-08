@@ -36,6 +36,15 @@ export default function Navbar() {
     return pathname.startsWith(href);
   };
 
+  const loginHref =
+    pathname && pathname !== '/login' && pathname !== '/register'
+      ? `/login?redirect=${encodeURIComponent(pathname)}`
+      : '/login';
+  const registerHref =
+    pathname && pathname !== '/login' && pathname !== '/register'
+      ? `/register?redirect=${encodeURIComponent(pathname)}`
+      : '/register';
+
   return (
     <header className="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b border-slate-100 transition-all">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -65,7 +74,16 @@ export default function Navbar() {
           <nav className="hidden md:flex items-center bg-slate-50 p-1.5 rounded-full border border-slate-200/80 shadow-inner">
             {navLinks.map((link) => {
               const active = isActive(link.href);
-              return (
+              const loginHref =
+    pathname && pathname !== '/login' && pathname !== '/register'
+      ? `/login?redirect=${encodeURIComponent(pathname)}`
+      : '/login';
+  const registerHref =
+    pathname && pathname !== '/login' && pathname !== '/register'
+      ? `/register?redirect=${encodeURIComponent(pathname)}`
+      : '/register';
+
+  return (
                 <Link
                   key={link.href}
                   href={link.href}
@@ -173,13 +191,13 @@ export default function Navbar() {
             ) : (
               <div className="flex items-center gap-2">
                 <Link
-                  href="/login"
+                  href={loginHref}
                   className="px-4 py-2 text-xs font-bold text-slate-700 hover:text-slate-950 transition-colors"
                 >
                   Log In
                 </Link>
                 <Link
-                  href="/register"
+                  href={registerHref}
                   className="px-5 py-2 text-xs font-bold text-white bg-slate-950 hover:bg-slate-800 rounded-full shadow-sm transition-all"
                 >
                   Sign Up
@@ -265,14 +283,14 @@ export default function Navbar() {
             ) : (
               <div className="grid grid-cols-2 gap-2 pt-2">
                 <Link
-                  href="/login"
+                  href={loginHref}
                   onClick={() => setMobileMenuOpen(false)}
                   className="w-full text-center py-2.5 rounded-full border border-slate-200 text-xs font-bold text-slate-800"
                 >
                   Log In
                 </Link>
                 <Link
-                  href="/register"
+                  href={registerHref}
                   onClick={() => setMobileMenuOpen(false)}
                   className="w-full text-center py-2.5 rounded-full bg-slate-950 text-white text-xs font-bold"
                 >

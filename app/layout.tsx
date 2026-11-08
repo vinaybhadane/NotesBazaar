@@ -1,9 +1,11 @@
 import type { Metadata } from 'next';
+import React, { Suspense } from 'react';
 import './globals.css';
 import { AuthProvider } from '@/lib/auth-context';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import CookieBanner from '@/components/CookieBanner';
+import NavigationProgressBar from '@/components/NavigationProgressBar';
 import { Toaster } from 'sonner';
 
 export const metadata: Metadata = {
@@ -61,6 +63,9 @@ export default function RootLayout({
     <html lang="en">
       <body className="min-h-screen flex flex-col bg-white text-slate-900 antialiased selection:bg-[#FFE500] selection:text-slate-950">
         <AuthProvider>
+          <Suspense fallback={null}>
+            <NavigationProgressBar />
+          </Suspense>
           {/* Announcement Bar */}
           <div className="bg-slate-950 text-white text-[11px] font-medium py-1.5 px-4 text-center tracking-wide flex items-center justify-center gap-2">
             <span className="w-2 h-2 rounded-full bg-[#FFE500] animate-pulse"></span>

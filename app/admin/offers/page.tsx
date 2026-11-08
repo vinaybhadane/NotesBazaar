@@ -9,7 +9,7 @@ export const metadata: Metadata = {
 };
 
 export default async function AdminOffersPage() {
-  const offers = await db.getActiveOffers();
+  const offers = await db.getAllOffers();
 
   return (
     <div className="space-y-6">

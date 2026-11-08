@@ -11,7 +11,29 @@ import { toast } from 'sonner';
 function RegisterForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const redirectUrl = searchParams.get('redirect') || '/account';
+  const queryRedirect = searchParams.get('redirect');
+
+  const getDestinationUrl = () => {
+    if (queryRedirect) return queryRedirect;
+    if (typeof window !== 'undefined' && document.referrer) {
+      try {
+        const refUrl = new URL(document.referrer);
+        if (
+          refUrl.origin === window.location.origin &&
+          !refUrl.pathname.startsWith('/login') &&
+          !refUrl.pathname.startsWith('/register') &&
+          !refUrl.pathname.startsWith('/forgot-password')
+        ) {
+          return refUrl.pathname + refUrl.search;
+        }
+      } catch {
+        // fallback
+      }
+    }
+    return '/';
+  };
+
+  const redirectUrl = getDestinationUrl();
 
   const { signUpWithEmail, signInWithGoogle } = useAuth();
   const [name, setName] = useState('');
@@ -34,7 +56,7 @@ function RegisterForm() {
     try {
       await signUpWithEmail(cleanEmail, password, name.trim());
       toast.success('Account created successfully!');
-      router.push(redirectUrl);
+      router.push(getDestinationUrl());
       router.refresh();
     } catch (err: any) {
       console.error('Registration error:', err);
@@ -62,7 +84,8 @@ function RegisterForm() {
     try {
       await signInWithGoogle();
       toast.success('Account created with Google!');
-      router.push(redirectUrl);
+      router.push(getDestinationUrl());
+      router.refresh();
     } catch (err: any) {
       toast.error(err.message || 'Google sign-up failed.');
     } finally {
