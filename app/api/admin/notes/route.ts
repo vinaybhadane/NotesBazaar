@@ -61,24 +61,7 @@ export async function POST(req: NextRequest) {
     }
 
     const productId = `prod_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    let fileSizeBytes = 0;
-
-    // Upload file if provided
-    if (file && file.size > 0) {
-      const arrayBuf = await file.arrayBuffer();
-      const buffer = Buffer.from(arrayBuf);
-      fileSizeBytes = buffer.length;
-
-      const uploadResult = await storage.uploadPrivateNote(buffer, file.name, productId);
-      await db.recordProductFile({
-        product_id: productId,
-        blob_container: uploadResult.container,
-        blob_name: uploadResult.blobName,
-        original_filename: file.name,
-        file_size_bytes: uploadResult.size,
-        mime_type: file.type || 'application/pdf',
-      });
-    }
+    const fileSizeBytes = file ? file.size : 0;
 
     const newProduct: Product & { subject_name?: string } = {
       id: productId,
@@ -104,7 +87,28 @@ export async function POST(req: NextRequest) {
       updated_at: new Date().toISOString(),
     };
 
+    // 1. Create the product FIRST so foreign key constraint fk_files_product is satisfied!
     const saved = await db.createProduct(newProduct);
+
+    // 2. Upload file and record in product_files now that product exists in Azure SQL
+    if (file && file.size > 0) {
+      try {
+        const arrayBuf = await file.arrayBuffer();
+        const buffer = Buffer.from(arrayBuf);
+        const uploadResult = await storage.uploadPrivateNote(buffer, file.name, saved.id);
+        await db.recordProductFile({
+          product_id: saved.id,
+          blob_container: uploadResult.container,
+          blob_name: uploadResult.blobName,
+          original_filename: file.name,
+          file_size_bytes: uploadResult.size,
+          mime_type: file.type || 'application/pdf',
+        });
+        saved.file_size_bytes = uploadResult.size;
+      } catch (fileErr) {
+        console.error('[API /api/admin/notes] File upload warning:', fileErr);
+      }
+    }
 
     // Audit log
     await db.logAdminAudit({

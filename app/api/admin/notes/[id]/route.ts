@@ -19,6 +19,11 @@ export async function GET(req: NextRequest, { params }: Params) {
 export async function PUT(req: NextRequest, { params }: Params) {
   try {
     const resolved = await params;
+    const existing = await db.getProductById(resolved.id);
+    if (!existing) {
+      return NextResponse.json({ error: 'Product not found' }, { status: 404 });
+    }
+
     const contentType = req.headers.get('content-type') || '';
     let body: any = {};
     let file: File | null = null;
