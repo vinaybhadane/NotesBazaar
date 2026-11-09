@@ -1114,6 +1114,39 @@ export const db = {
     const pool = await getSqlPool();
     if (pool) {
       try {
+        // Defensive check: ensure user exists in SQL before inserting to satisfy foreign key fk_orders_user
+        let validUserId = order.user_id;
+        const userCheck = await pool.request()
+          .input('user_id', sql.NVarChar(50), validUserId)
+          .query('SELECT TOP 1 id FROM users WHERE id = @user_id');
+
+        if (userCheck.recordset.length === 0) {
+          console.warn(`[createOrder] user_id '${validUserId}' not found in Azure SQL. Looking up by customer_email '${order.customer_email}'...`);
+          if (order.customer_email) {
+            const emailRes = await pool.request()
+              .input('email', sql.NVarChar(255), order.customer_email.trim().toLowerCase())
+              .query('SELECT TOP 1 id FROM users WHERE LOWER(email) = @email');
+            if (emailRes.recordset.length > 0) {
+              validUserId = emailRes.recordset[0].id;
+              order.user_id = validUserId;
+              console.log(`[createOrder] Resolved user_id to '${validUserId}' via customer_email.`);
+            } else {
+              console.log(`[createOrder] Inserting missing user in Azure SQL for '${order.customer_email}'...`);
+              await pool.request()
+                .input('id', sql.NVarChar(50), validUserId)
+                .input('firebase_uid', sql.NVarChar(128), `anon_${Date.now()}`)
+                .input('email', sql.NVarChar(255), order.customer_email.trim().toLowerCase())
+                .input('display_name', sql.NVarChar(255), order.customer_name || null)
+                .input('role', sql.NVarChar(50), 'student')
+                .input('status', sql.NVarChar(50), 'active')
+                .query(`
+                  INSERT INTO users (id, firebase_uid, email, display_name, role, status)
+                  VALUES (@id, @firebase_uid, @email, @display_name, @role, @status)
+                `);
+            }
+          }
+        }
+
         await pool.request()
           .input('id', sql.NVarChar(50), order.id)
           .input('user_id', sql.NVarChar(50), order.user_id)
@@ -1127,8 +1160,11 @@ export const db = {
           .input('customer_email', sql.NVarChar(255), order.customer_email)
           .input('customer_name', sql.NVarChar(255), order.customer_name || null)
           .query(`
-            INSERT INTO orders (id, user_id, order_number, total_amount_in_paise, discount_amount_in_paise, final_amount_in_paise, currency, status, razorpay_order_id, customer_email, customer_name)
-            VALUES (@id, @user_id, @order_number, @total_amount_in_paise, @discount_amount_in_paise, @final_amount_in_paise, @currency, @status, @razorpay_order_id, @customer_email, @customer_name)
+            IF NOT EXISTS (SELECT 1 FROM orders WHERE id = @id)
+            BEGIN
+              INSERT INTO orders (id, user_id, order_number, total_amount_in_paise, discount_amount_in_paise, final_amount_in_paise, currency, status, razorpay_order_id, customer_email, customer_name)
+              VALUES (@id, @user_id, @order_number, @total_amount_in_paise, @discount_amount_in_paise, @final_amount_in_paise, @currency, @status, @razorpay_order_id, @customer_email, @customer_name)
+            END
           `);
 
         for (const item of items) {
@@ -1141,12 +1177,16 @@ export const db = {
             .input('discount_amount_in_paise', sql.Int, item.discount_amount_in_paise || 0)
             .input('final_price_in_paise', sql.Int, item.final_price_in_paise)
             .query(`
-              INSERT INTO order_items (id, order_id, product_id, quantity, unit_price_in_paise, discount_amount_in_paise, final_price_in_paise)
-              VALUES (@id, @order_id, @product_id, @quantity, @unit_price_in_paise, @discount_amount_in_paise, @final_price_in_paise)
+              IF NOT EXISTS (SELECT 1 FROM order_items WHERE id = @id)
+              BEGIN
+                INSERT INTO order_items (id, order_id, product_id, quantity, unit_price_in_paise, discount_amount_in_paise, final_price_in_paise)
+                VALUES (@id, @order_id, @product_id, @quantity, @unit_price_in_paise, @discount_amount_in_paise, @final_price_in_paise)
+              END
             `);
         }
       } catch (dbErr) {
-        console.warn('[Database] Failed to insert order in Azure SQL:', dbErr);
+        console.error('[Database] Failed to insert order in Azure SQL:', dbErr);
+        throw dbErr;
       }
     }
 
@@ -1166,12 +1206,12 @@ export const db = {
       try {
         const orderRes = await pool.request()
           .input('id', sql.NVarChar(50), id)
-          .query('SELECT TOP 1 * FROM orders WHERE id = @id');
+          .query('SELECT TOP 1 * FROM orders WHERE id = @id OR razorpay_order_id = @id');
 
         if (orderRes.recordset.length > 0) {
           const o = orderRes.recordset[0];
           const itemsRes = await pool.request()
-            .input('order_id', sql.NVarChar(50), id)
+            .input('order_id', sql.NVarChar(50), o.id)
             .query(`
               SELECT oi.*, p.title as product_title, p.file_format as product_file_format,
                      p.file_size_bytes as product_file_size_bytes, p.slug as product_slug
@@ -1189,7 +1229,7 @@ export const db = {
           if ((status === 'pending' || status === 'created') && ageMs > FIFTEEN_MIN_MS) {
             status = 'cancelled';
             await pool.request()
-              .input('id', sql.NVarChar(50), id)
+              .input('id', sql.NVarChar(50), o.id)
               .query("UPDATE orders SET status = 'cancelled', updated_at = GETUTCDATE() WHERE id = @id");
           }
 
@@ -1229,10 +1269,10 @@ export const db = {
     }
 
     const data = await getStore();
-    const order = data.orders.find((o) => o.id === id);
+    const order = data.orders.find((o) => o.id === id || o.razorpay_order_id === id);
     if (!order) return null;
 
-    const items = data.order_items.filter((it) => it.order_id === id);
+    const items = data.order_items.filter((it) => it.order_id === order.id);
     const enrichedItems = items.map((it) => {
       const prod = data.products.find((p) => p.id === it.product_id);
       return {
@@ -2005,16 +2045,118 @@ export const db = {
   // Users & Admin Authorization
   // ---------------------------------------------------------------------------
   async upsertUser(user: { firebase_uid: string; email: string; display_name?: string | null }): Promise<User> {
+    const cleanEmail = (user.email || '').trim().toLowerCase();
+    const adminEmail = (process.env.ADMIN_EMAIL || 'vinaybhadane06@gmail.com').trim().toLowerCase();
+    const isOwner = cleanEmail === adminEmail;
+    const defaultRole = isOwner ? 'admin' : 'student';
+
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        let existingUser: any = null;
+        if (user.firebase_uid && user.firebase_uid !== 'anon') {
+          const res = await pool.request()
+            .input('uid', sql.NVarChar(128), user.firebase_uid)
+            .query('SELECT TOP 1 * FROM users WHERE firebase_uid = @uid');
+          if (res.recordset.length > 0) {
+            existingUser = res.recordset[0];
+          }
+        }
+        if (!existingUser && cleanEmail) {
+          const res = await pool.request()
+            .input('email', sql.NVarChar(255), cleanEmail)
+            .query('SELECT TOP 1 * FROM users WHERE LOWER(email) = @email');
+          if (res.recordset.length > 0) {
+            existingUser = res.recordset[0];
+          }
+        }
+
+        if (existingUser) {
+          const newRole = isOwner ? 'admin' : (existingUser.role || 'student');
+          const newUid = (user.firebase_uid && user.firebase_uid !== 'anon') ? user.firebase_uid : existingUser.firebase_uid;
+          const newEmail = cleanEmail || existingUser.email;
+          const newName = user.display_name !== undefined ? (user.display_name || existingUser.display_name) : existingUser.display_name;
+
+          await pool.request()
+            .input('id', sql.NVarChar(50), existingUser.id)
+            .input('firebase_uid', sql.NVarChar(128), newUid)
+            .input('email', sql.NVarChar(255), newEmail)
+            .input('display_name', sql.NVarChar(255), newName || null)
+            .input('role', sql.NVarChar(50), newRole)
+            .query(`
+              UPDATE users 
+              SET firebase_uid = @firebase_uid,
+                  email = @email,
+                  display_name = @display_name,
+                  role = @role,
+                  updated_at = SYSUTCDATETIME()
+              WHERE id = @id
+            `);
+
+          const updatedUser: User = {
+            id: existingUser.id,
+            firebase_uid: newUid,
+            email: newEmail,
+            display_name: newName || null,
+            role: newRole,
+            status: existingUser.status || 'active',
+            created_at: existingUser.created_at ? new Date(existingUser.created_at).toISOString() : new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+
+          const data = await getStore();
+          const localIdx = data.users.findIndex((u) => u.id === existingUser.id || (cleanEmail && u.email?.toLowerCase() === cleanEmail));
+          if (localIdx >= 0) {
+            data.users[localIdx] = updatedUser;
+          } else {
+            data.users.push(updatedUser);
+          }
+          writeLocalData(data);
+          return updatedUser;
+        } else {
+          const newId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+          const assignedUid = user.firebase_uid || `anon_${Date.now()}`;
+          await pool.request()
+            .input('id', sql.NVarChar(50), newId)
+            .input('firebase_uid', sql.NVarChar(128), assignedUid)
+            .input('email', sql.NVarChar(255), cleanEmail)
+            .input('display_name', sql.NVarChar(255), user.display_name || null)
+            .input('role', sql.NVarChar(50), defaultRole)
+            .input('status', sql.NVarChar(50), 'active')
+            .query(`
+              INSERT INTO users (id, firebase_uid, email, display_name, role, status)
+              VALUES (@id, @firebase_uid, @email, @display_name, @role, @status)
+            `);
+
+          const newUser: User = {
+            id: newId,
+            firebase_uid: assignedUid,
+            email: cleanEmail,
+            display_name: user.display_name || null,
+            role: defaultRole,
+            status: 'active',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+
+          const data = await getStore();
+          data.users.push(newUser);
+          writeLocalData(data);
+          return newUser;
+        }
+      } catch (dbErr) {
+        console.error('[Database] Failed to upsert user in Azure SQL:', dbErr);
+      }
+    }
+
     const data = await getStore();
-    let u = data.users.find((item) => item.firebase_uid === user.firebase_uid || (item.email && user.email && item.email.toLowerCase() === user.email.toLowerCase()));
-    const adminEmail = (process.env.ADMIN_EMAIL || 'vinaybhadane06@gmail.com').toLowerCase();
-    const isOwner = user.email.toLowerCase() === adminEmail;
+    let u = data.users.find((item) => item.firebase_uid === user.firebase_uid || (item.email && cleanEmail && item.email.toLowerCase() === cleanEmail));
 
     if (!u) {
       u = {
         id: `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         firebase_uid: user.firebase_uid,
-        email: user.email,
+        email: cleanEmail,
         display_name: user.display_name || null,
         role: isOwner ? 'admin' : 'student',
         status: 'active',
@@ -2023,39 +2165,42 @@ export const db = {
       };
       data.users.push(u);
     } else {
-      u.email = user.email;
+      u.email = cleanEmail;
       if (user.firebase_uid && user.firebase_uid !== 'anon') u.firebase_uid = user.firebase_uid;
       if (user.display_name) u.display_name = user.display_name;
       if (isOwner) u.role = 'admin';
       u.updated_at = new Date().toISOString();
     }
+    writeLocalData(data);
+    return u;
+  },
 
+  async getUserById(id: string): Promise<User | null> {
     const pool = await getSqlPool();
     if (pool) {
       try {
-        await pool.request()
-          .input('id', sql.NVarChar(50), u.id)
-          .input('firebase_uid', sql.NVarChar(128), u.firebase_uid)
-          .input('email', sql.NVarChar(255), u.email)
-          .input('display_name', sql.NVarChar(255), u.display_name || null)
-          .input('role', sql.NVarChar(50), u.role)
-          .input('status', sql.NVarChar(50), u.status)
-          .query(`
-            IF EXISTS (SELECT 1 FROM users WHERE firebase_uid = @firebase_uid)
-              UPDATE users SET email = @email, display_name = COALESCE(@display_name, display_name), role = @role, status = @status, updated_at = SYSUTCDATETIME() WHERE firebase_uid = @firebase_uid
-            ELSE IF EXISTS (SELECT 1 FROM users WHERE email = @email)
-              UPDATE users SET firebase_uid = @firebase_uid, display_name = COALESCE(@display_name, display_name), role = @role, status = @status, updated_at = SYSUTCDATETIME() WHERE email = @email
-            ELSE
-              INSERT INTO users (id, firebase_uid, email, display_name, role, status)
-              VALUES (@id, @firebase_uid, @email, @display_name, @role, @status)
-          `);
-      } catch (dbErr) {
-        console.warn('[Database] Failed to upsert user in Azure SQL:', dbErr);
+        const res = await pool.request()
+          .input('id', sql.NVarChar(50), id)
+          .query('SELECT TOP 1 * FROM users WHERE id = @id');
+        if (res.recordset.length > 0) {
+          const r = res.recordset[0];
+          return {
+            id: r.id,
+            firebase_uid: r.firebase_uid,
+            email: r.email,
+            display_name: r.display_name,
+            role: r.role || 'student',
+            status: r.status || 'active',
+            created_at: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+            updated_at: r.updated_at ? new Date(r.updated_at).toISOString() : new Date().toISOString(),
+          };
+        }
+      } catch (err) {
+        console.error('[db.getUserById SQL error]:', err);
       }
     }
-
-    writeLocalData(data);
-    return u;
+    const data = await getStore();
+    return data.users.find((u) => u.id === id) || null;
   },
 
   async getUserByFirebaseUid(uid: string): Promise<User | null> {
