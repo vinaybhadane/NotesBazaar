@@ -291,8 +291,8 @@ async function getStore(): Promise<LocalDbSchema> {
         user_id: e.user_id,
         product_id: e.product_id,
         order_id: e.order_id,
-        status: e.is_active ? 'active' : 'revoked',
-        granted_at: e.created_at ? new Date(e.created_at).toISOString() : new Date().toISOString(),
+        status: e.status || (e.is_active ? 'active' : 'revoked'),
+        granted_at: e.granted_at ? new Date(e.granted_at).toISOString() : (e.created_at ? new Date(e.created_at).toISOString() : new Date().toISOString()),
         expires_at: e.expires_at ? new Date(e.expires_at).toISOString() : null,
         created_at: e.created_at ? new Date(e.created_at).toISOString() : new Date().toISOString(),
       })),
@@ -1051,6 +1051,7 @@ export const db = {
       }
     }
 
+    clearDbCache();
     const data = await getStore();
     data.orders.push(order);
     for (const item of items) {
@@ -1112,6 +1113,7 @@ export const db = {
       }
     }
 
+    clearDbCache();
     const data = await getStore();
     const order = data.orders.find((o) => o.id === orderId);
     if (!order) return null;
@@ -1125,10 +1127,11 @@ export const db = {
     return order;
   },
 
-  async getOrdersByUser(userId: string): Promise<Order[]> {
+  async getOrdersByUser(userId: string, userEmail?: string): Promise<Order[]> {
     const data = await getStore();
+    const emailLower = userEmail?.toLowerCase();
     const userOrders = data.orders
-      .filter((o) => o.user_id === userId)
+      .filter((o) => o.user_id === userId || (emailLower && o.customer_email?.toLowerCase() === emailLower))
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
     return userOrders.map((o) => {
@@ -1216,12 +1219,6 @@ export const db = {
   // Download Entitlements
   // ---------------------------------------------------------------------------
   async createEntitlement(userId: string, productId: string, orderId: string): Promise<DownloadEntitlement> {
-    const data = await getStore();
-    const existing = data.download_entitlements.find(
-      (e) => e.user_id === userId && e.product_id === productId && e.status === 'active'
-    );
-    if (existing) return existing;
-
     const entitlement: DownloadEntitlement = {
       id: `ent_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       user_id: userId,
@@ -1240,25 +1237,45 @@ export const db = {
           .input('user_id', sql.NVarChar(50), entitlement.user_id)
           .input('product_id', sql.NVarChar(50), entitlement.product_id)
           .input('order_id', sql.NVarChar(50), entitlement.order_id)
-          .input('is_active', sql.Bit, 1)
+          .input('status', sql.NVarChar(50), 'active')
           .query(`
-            IF NOT EXISTS (SELECT 1 FROM download_entitlements WHERE user_id = @user_id AND product_id = @product_id AND is_active = 1)
-              INSERT INTO download_entitlements (id, user_id, product_id, order_id, is_active)
-              VALUES (@id, @user_id, @product_id, @order_id, @is_active)
+            IF NOT EXISTS (SELECT 1 FROM download_entitlements WHERE user_id = @user_id AND product_id = @product_id AND status = 'active')
+            BEGIN
+              INSERT INTO download_entitlements (id, user_id, product_id, order_id, status, granted_at)
+              VALUES (@id, @user_id, @product_id, @order_id, @status, SYSUTCDATETIME());
+            END
           `);
       } catch (dbErr) {
-        console.warn('[Database] Failed to insert download entitlement in Azure SQL:', dbErr);
+        console.error('[Database] Azure SQL createEntitlement error:', dbErr);
       }
     }
+
+    clearDbCache();
+    const data = await getStore();
+    const existing = data.download_entitlements.find(
+      (e) => e.user_id === userId && e.product_id === productId && e.status === 'active'
+    );
+    if (existing) return existing;
 
     data.download_entitlements.push(entitlement);
     writeLocalData(data);
     return entitlement;
   },
 
-  async getEntitlementsByUser(userId: string): Promise<DownloadEntitlement[]> {
+  async getEntitlementsByUser(userId: string, userEmail?: string): Promise<DownloadEntitlement[]> {
     const data = await getStore();
-    const list = data.download_entitlements.filter((e) => e.user_id === userId && e.status === 'active');
+    const emailLower = userEmail?.toLowerCase();
+    const userOrderIds = new Set(
+      data.orders
+        .filter((o) => o.user_id === userId || (emailLower && o.customer_email?.toLowerCase() === emailLower))
+        .map((o) => o.id)
+    );
+
+    const list = data.download_entitlements.filter(
+      (e) =>
+        (e.user_id === userId || userOrderIds.has(e.order_id)) &&
+        (e.status === 'active' || (e as any).is_active === 1)
+    );
     return list.map((e) => {
       const prod = data.products.find((p) => p.id === e.product_id);
       return {

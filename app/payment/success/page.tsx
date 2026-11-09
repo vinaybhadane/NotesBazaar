@@ -12,6 +12,8 @@ export const metadata: Metadata = {
   },
 };
 
+export const dynamic = 'force-dynamic';
+
 interface SuccessPageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }

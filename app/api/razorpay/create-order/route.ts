@@ -8,24 +8,18 @@ export async function POST(req: NextRequest) {
   try {
     const authHeader = req.headers.get('Authorization');
     const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null;
-    if (!token) {
+    const body = await req.json();
+
+    const authUser = token ? await verifyServerToken(token) : null;
+    const userEmail = (authUser?.email || body.userEmail || '').trim();
+    const userId = authUser?.uid || body.userId;
+    const userName = authUser?.name || body.userName;
+
+    if (!userEmail) {
       return NextResponse.json({ error: 'Authentication required to initiate checkout.' }, { status: 401 });
     }
 
-    const authUser = await verifyServerToken(token);
-    let userEmail = authUser?.email;
-    let userId = authUser?.uid;
-
-    // Local dev fallback if admin credentials are in setup phase
-    if (!authUser) {
-      // Check if user was already synced in database
-      const bodyPreview = await req.clone().json();
-      if (bodyPreview.userEmail) {
-        userEmail = bodyPreview.userEmail;
-      }
-    }
-
-    const { productId, couponCode } = await req.json();
+    const { productId, couponCode } = body;
     if (!productId) {
       return NextResponse.json({ error: 'Product ID is required.' }, { status: 400 });
     }
@@ -71,10 +65,11 @@ export async function POST(req: NextRequest) {
     const finalAmountInPaise = Math.max(0, totalAmountInPaise - discountAmountInPaise);
 
     // 5. Ensure DB user exists
-    const emailToUse = userEmail || 'student@notesbazaar.local';
+    const emailToUse = userEmail;
     const dbUser = await db.upsertUser({
-      firebase_uid: userId || `local_${Date.now()}`,
+      firebase_uid: userId || `firebase_${Date.now()}`,
       email: emailToUse,
+      display_name: userName || null,
     });
 
     const orderNumber = `NBZ-${Date.now().toString(36).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`;

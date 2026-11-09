@@ -23,6 +23,8 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
+export const dynamic = 'force-dynamic';
+
 export default async function OrderDetailPage({ params }: OrderDetailPageProps) {
   const resolved = await params;
   const orderId = resolved['order-id'];
@@ -35,7 +37,7 @@ export default async function OrderDetailPage({ params }: OrderDetailPageProps) 
   // Fetch entitlements for direct download buttons if paid
   let entitlements: any[] = [];
   if (order.status === 'paid') {
-    entitlements = await db.getEntitlementsByUser(order.user_id);
+    entitlements = await db.getEntitlementsByUser(order.user_id, order.customer_email);
   }
 
   const finalRupees = (order.final_amount_in_paise / 100).toFixed(0);

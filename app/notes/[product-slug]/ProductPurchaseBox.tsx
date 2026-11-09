@@ -97,6 +97,9 @@ export default function ProductPurchaseBox({ product }: ProductPurchaseBoxProps)
         body: JSON.stringify({
           productId: product.id,
           couponCode: appliedDiscount?.code,
+          userEmail: firebaseUser.email,
+          userName: firebaseUser.displayName,
+          userId: firebaseUser.uid,
         }),
       });
 

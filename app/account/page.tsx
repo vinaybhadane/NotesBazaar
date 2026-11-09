@@ -25,8 +25,10 @@ export default function AccountOverviewPage() {
       if (!firebaseUser) return;
       try {
         const token = await firebaseUser.getIdToken();
-        const res = await fetch('/api/user/dashboard-data', {
+        const emailParam = firebaseUser.email ? `?email=${encodeURIComponent(firebaseUser.email)}` : '';
+        const res = await fetch(`/api/user/dashboard-data${emailParam}`, {
           headers: { Authorization: `Bearer ${token}` },
+          cache: 'no-store',
         });
         if (res.ok) {
           const data = await res.json();

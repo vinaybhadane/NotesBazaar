@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { revalidatePath } from 'next/cache';
 import { db } from '@/lib/db';
 import { razorpayService } from '@/lib/razorpay';
 import { Payment } from '@/lib/types';
@@ -70,10 +71,13 @@ export async function POST(req: NextRequest) {
     await db.recordPayment(paymentRecord);
 
     // Atomic fulfillment: Create download entitlements for every purchased note item
-    if (order.items && order.items.length > 0) {
-      for (const item of order.items) {
-        await db.createEntitlement(order.user_id, item.product_id, order.id);
-      }
+    let itemsToFulfill = order.items || [];
+    if (!itemsToFulfill.length) {
+      const fresh = await db.getOrderById(order.id);
+      itemsToFulfill = fresh?.items || [];
+    }
+    for (const item of itemsToFulfill) {
+      await db.createEntitlement(order.user_id, item.product_id, order.id);
     }
 
     // Send confirmation in-app notification
@@ -88,6 +92,14 @@ export async function POST(req: NextRequest) {
       delivery_status: 'delivered',
       created_at: new Date().toISOString(),
     });
+
+    try {
+      revalidatePath('/account/downloads');
+      revalidatePath('/account/purchases');
+      revalidatePath('/account');
+    } catch (revalErr) {
+      console.warn('[RevalidatePath error]:', revalErr);
+    }
 
     return NextResponse.json({
       success: true,
