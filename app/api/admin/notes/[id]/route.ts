@@ -13,7 +13,8 @@ export async function GET(req: NextRequest, { params }: Params) {
   const resolved = await params;
   const product = await db.getProductById(resolved.id);
   if (!product) return NextResponse.json({ error: 'Product not found' }, { status: 404 });
-  return NextResponse.json({ product });
+  const files = await db.getProductFilesByProductId(resolved.id);
+  return NextResponse.json({ product, files });
 }
 
 export async function PUT(req: NextRequest, { params }: Params) {
@@ -26,7 +27,9 @@ export async function PUT(req: NextRequest, { params }: Params) {
 
     const contentType = req.headers.get('content-type') || '';
     let body: any = {};
-    let file: File | null = null;
+    const uploadedFiles: File[] = [];
+    let selectedFileIds: string[] = [];
+    let keptFileIds: string[] = [];
 
     if (contentType.includes('multipart/form-data')) {
       const formData = await req.formData();
@@ -66,24 +69,65 @@ export async function PUT(req: NextRequest, { params }: Params) {
         }
       }
 
-      file = formData.get('file') as File | null;
+      // Collect multiple files
+      const multiple = formData.getAll('files') as File[];
+      for (const f of multiple) {
+        if (f && f.size > 0) uploadedFiles.push(f);
+      }
+      const single = formData.get('file') as File | null;
+      if (single && single.size > 0 && !uploadedFiles.some((f) => f.name === single.name && f.size === single.size)) {
+        uploadedFiles.push(single);
+      }
+
+      const selIdsRaw = formData.get('selected_file_ids');
+      if (selIdsRaw && typeof selIdsRaw === 'string') {
+        try {
+          selectedFileIds = JSON.parse(selIdsRaw);
+        } catch {}
+      }
+
+      const keptIdsRaw = formData.get('kept_file_ids');
+      if (keptIdsRaw && typeof keptIdsRaw === 'string') {
+        try {
+          keptFileIds = JSON.parse(keptIdsRaw);
+        } catch {}
+      }
     } else {
       body = await req.json();
     }
 
-    if (file && file.size > 0) {
-      const arrayBuf = await file.arrayBuffer();
-      const buffer = Buffer.from(arrayBuf);
-      const uploadResult = await storage.uploadPrivateNote(buffer, file.name, resolved.id);
-      await db.recordProductFile({
-        product_id: resolved.id,
-        blob_container: uploadResult.container,
-        blob_name: uploadResult.blobName,
-        original_filename: file.name,
-        file_size_bytes: uploadResult.size,
-        mime_type: file.type || 'application/pdf',
-      });
-      body.file_size_bytes = uploadResult.size;
+    // Process removals if keptFileIds was provided
+    if (keptFileIds.length > 0 || (contentType.includes('multipart/form-data') && !uploadedFiles.length && !selectedFileIds.length)) {
+      const currentFiles = await db.getProductFilesByProductId(resolved.id);
+      for (const cur of currentFiles) {
+        if (!keptFileIds.includes(cur.id)) {
+          await db.deleteProductFile(cur.id);
+        }
+      }
+    }
+
+    // Attach selected existing DB files
+    for (const fileId of selectedFileIds) {
+      await db.attachExistingFileToProduct(resolved.id, fileId);
+    }
+
+    // Upload newly attached files
+    for (const f of uploadedFiles) {
+      try {
+        const arrayBuf = await f.arrayBuffer();
+        const buffer = Buffer.from(arrayBuf);
+        const uploadResult = await storage.uploadPrivateNote(buffer, f.name, resolved.id);
+        await db.recordProductFile({
+          product_id: resolved.id,
+          blob_container: uploadResult.container,
+          blob_name: uploadResult.blobName,
+          original_filename: f.name,
+          file_size_bytes: uploadResult.size,
+          mime_type: f.type || 'application/pdf',
+        });
+      } catch (err: any) {
+        console.error('[API /api/admin/notes/[id] PUT] File upload error:', err.message);
+      }
     }
 
     const updated = await db.updateProduct(resolved.id, {

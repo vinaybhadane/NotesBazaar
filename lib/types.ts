@@ -186,6 +186,7 @@ export interface DownloadEntitlement {
   created_at: string;
   // Joined
   product?: Product;
+  files?: ProductFile[];
 }
 
 export interface Banner {

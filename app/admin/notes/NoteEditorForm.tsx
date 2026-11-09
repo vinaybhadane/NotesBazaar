@@ -1,9 +1,23 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Product, Branch, AcademicYear, Pattern, Subject } from '@/lib/types';
-import { Save, Upload, FileText, ToggleLeft, ToggleRight, Loader2, CheckCircle2 } from 'lucide-react';
+import { Product, Branch, AcademicYear, Pattern, Subject, ProductFile } from '@/lib/types';
+import {
+  Save,
+  Upload,
+  FileText,
+  ToggleLeft,
+  ToggleRight,
+  Loader2,
+  CheckCircle2,
+  Database,
+  Trash2,
+  Search,
+  X,
+  Check,
+  Plus,
+} from 'lucide-react';
 import { toast } from 'sonner';
 
 interface NoteEditorFormProps {
@@ -50,9 +64,76 @@ export default function NoteEditorForm({
   const [topicsText, setTopicsText] = useState(
     initialProduct?.topics_covered?.join('\n') || ''
   );
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+
+  // Multi-note purchase bundle management
+  const [existingFiles, setExistingFiles] = useState<ProductFile[]>([]);
+  const [selectedDbFiles, setSelectedDbFiles] = useState<Array<{
+    id: string;
+    original_filename: string;
+    file_size_bytes: number;
+    product_title?: string;
+  }>>([]);
+  const [newUploadFiles, setNewUploadFiles] = useState<File[]>([]);
+
+  // Database notes selector modal states
+  const [isDbModalOpen, setIsDbModalOpen] = useState(false);
+  const [availableDbFiles, setAvailableDbFiles] = useState<Array<{
+    id: string;
+    original_filename: string;
+    file_size_bytes: number;
+    product_title?: string;
+    created_at: string;
+  }>>([]);
+  const [loadingDbFiles, setLoadingDbFiles] = useState(false);
+  const [dbSearchTerm, setDbSearchTerm] = useState('');
+
   const [saving, setSaving] = useState(false);
   const [uploadStatusMsg, setUploadStatusMsg] = useState('');
+
+  // Load existing attached notes when editing
+  useEffect(() => {
+    if (initialProduct?.id) {
+      fetch(`/api/admin/notes/${initialProduct.id}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.files && Array.isArray(data.files)) {
+            setExistingFiles(data.files);
+          }
+        })
+        .catch((e) => console.warn('Failed to load note files:', e));
+    }
+  }, [initialProduct?.id]);
+
+  // Open modal and fetch all files across DB
+  const handleOpenDbModal = async () => {
+    setIsDbModalOpen(true);
+    setLoadingDbFiles(true);
+    try {
+      const res = await fetch('/api/admin/files');
+      if (res.ok) {
+        const data = await res.json();
+        setAvailableDbFiles(data.files || []);
+      }
+    } catch {
+      toast.error('Failed to load files from database.');
+    } finally {
+      setLoadingDbFiles(false);
+    }
+  };
+
+  const handleToggleDbFile = (file: typeof availableDbFiles[0]) => {
+    const isAlreadyAttached = existingFiles.some((f) => f.id === file.id);
+    if (isAlreadyAttached) {
+      toast.info('This note is already attached to this product.');
+      return;
+    }
+    const isSelected = selectedDbFiles.some((f) => f.id === file.id);
+    if (isSelected) {
+      setSelectedDbFiles((prev) => prev.filter((f) => f.id !== file.id));
+    } else {
+      setSelectedDbFiles((prev) => [...prev, file]);
+    }
+  };
 
   // Auto-generate slug and prefill subject from title if new
   const handleTitleChange = (val: string) => {
@@ -91,7 +172,12 @@ export default function NoteEditorForm({
     }
 
     setSaving(true);
-    setUploadStatusMsg(selectedFile ? 'Uploading PDF file to secure storage & saving note...' : 'Saving note to catalog...');
+    const hasFilesToUpload = newUploadFiles.length > 0;
+    setUploadStatusMsg(
+      hasFilesToUpload
+        ? `Uploading ${newUploadFiles.length} note document(s) to secure storage & saving note...`
+        : 'Saving note configuration to catalog...'
+    );
 
     try {
       const topicsArray = topicsText
@@ -122,8 +208,23 @@ export default function NoteEditorForm({
       formData.append('topics_covered', JSON.stringify(topicsArray));
       formData.append('page_count', (parseInt(pageCount, 10) || 65).toString());
 
-      if (selectedFile) {
-        formData.append('file', selectedFile);
+      // Append all newly uploaded files
+      for (const f of newUploadFiles) {
+        formData.append('files', f);
+      }
+
+      // Append selected files from DB
+      formData.append(
+        'selected_file_ids',
+        JSON.stringify(selectedDbFiles.map((f) => f.id))
+      );
+
+      // In edit mode, record which existing files were kept
+      if (isEditing) {
+        formData.append(
+          'kept_file_ids',
+          JSON.stringify(existingFiles.map((f) => f.id))
+        );
       }
 
       const url = isEditing
@@ -428,56 +529,279 @@ export default function NoteEditorForm({
           </div>
         </div>
 
-        {/* PDF File Upload */}
-        <div className="pt-4 border-t border-slate-100 space-y-3">
-          <h2 className="text-sm font-bold text-slate-950 uppercase tracking-wider text-[11px] text-slate-400">
-            Document File (Private Storage)
-          </h2>
+        {/* Document Files & Multi-Note Bundling (Single Purchase) */}
+        <div className="pt-4 border-t border-slate-100 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-bold text-slate-950 uppercase tracking-wider text-[11px] text-slate-400">
+                Document Files (Single Purchase Bundle)
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Admin can add multiple notes inside a single purchase. Students who buy this product will get access to download all attached notes.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Option A: Upload New PDFs */}
+              <label className="px-4 py-2 rounded-2xl bg-slate-950 hover:bg-[#FFE500] hover:text-slate-950 text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer">
+                <Upload className="w-3.5 h-3.5" />
+                <span>Upload New PDF(s)</span>
+                <input
+                  type="file"
+                  multiple
+                  accept="application/pdf"
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files.length > 0) {
+                      const filesArray = Array.from(e.target.files);
+                      setNewUploadFiles((prev) => [...prev, ...filesArray]);
+                      toast.success(`Added ${filesArray.length} file(s) to upload queue`);
+                    }
+                  }}
+                />
+              </label>
 
-          {isEditing && (
-            <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-between text-xs text-slate-600">
-              <span className="flex items-center gap-2">
-                <FileText className="w-4 h-4 text-emerald-600" />
-                <span>Existing note PDF is securely stored. Upload a new file below only to replace it.</span>
-              </span>
-              {initialProduct?.file_size_bytes && (
-                <span className="font-mono text-[11px] text-slate-400 font-medium">
-                  {formatFileSize(initialProduct.file_size_bytes)}
+              {/* Option B: Select from Database Notes */}
+              <button
+                type="button"
+                onClick={handleOpenDbModal}
+                className="px-4 py-2 rounded-2xl bg-amber-100 hover:bg-amber-200 text-amber-950 text-xs font-bold transition-all border border-amber-300 flex items-center gap-1.5 cursor-pointer shadow-xs"
+              >
+                <Database className="w-3.5 h-3.5 text-amber-700" />
+                <span>Select from DB Notes</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Attached Files Summary Card */}
+          {existingFiles.length === 0 && selectedDbFiles.length === 0 && newUploadFiles.length === 0 ? (
+            <div className="p-8 border-2 border-dashed border-slate-200 rounded-3xl text-center space-y-2 bg-slate-50/50">
+              <FileText className="w-8 h-8 text-slate-300 mx-auto" />
+              <p className="text-xs font-bold text-slate-700">No note documents attached yet</p>
+              <p className="text-[11px] text-slate-400 max-w-md mx-auto">
+                Use the buttons above to <strong>Upload New PDF(s)</strong> or <strong>Select from Database Notes</strong>. You can bundle multiple units or chapters into this single purchase.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-slate-50 rounded-2xl border border-slate-200 p-4 space-y-3">
+              <div className="flex items-center justify-between text-xs font-bold text-slate-700 pb-2 border-b border-slate-200/80">
+                <span>
+                  Attached Notes ({existingFiles.length + selectedDbFiles.length + newUploadFiles.length} file{existingFiles.length + selectedDbFiles.length + newUploadFiles.length === 1 ? '' : 's'})
                 </span>
-              )}
+                <span className="font-mono text-slate-500 font-medium text-[11px]">
+                  Total Size:{' '}
+                  {formatFileSize(
+                    existingFiles.reduce((sum, f) => sum + (f.file_size_bytes || 0), 0) +
+                    selectedDbFiles.reduce((sum, f) => sum + (f.file_size_bytes || 0), 0) +
+                    newUploadFiles.reduce((sum, f) => sum + f.size, 0)
+                  )}
+                </span>
+              </div>
+
+              <div className="divide-y divide-slate-200/60">
+                {/* 1. Existing Attached Files */}
+                {existingFiles.map((file) => (
+                  <div key={file.id} className="py-2.5 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="p-1.5 bg-emerald-100 text-emerald-800 rounded-lg">
+                        <FileText className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-slate-900 truncate">
+                          {file.original_filename}
+                        </p>
+                        <span className="text-[10px] text-emerald-700 font-semibold bg-emerald-50 px-1.5 py-0.5 rounded">
+                          Stored Document · {formatFileSize(file.file_size_bytes)}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setExistingFiles((prev) => prev.filter((f) => f.id !== file.id))}
+                      className="p-1.5 text-slate-400 hover:text-red-600 rounded-lg transition-colors hover:bg-red-50"
+                      title="Remove from this purchase bundle"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+
+                {/* 2. Selected Files From Database */}
+                {selectedDbFiles.map((file) => (
+                  <div key={file.id} className="py-2.5 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="p-1.5 bg-amber-100 text-amber-800 rounded-lg">
+                        <Database className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-slate-900 truncate">
+                          {file.original_filename}
+                        </p>
+                        <span className="text-[10px] text-amber-800 font-semibold bg-amber-50 px-1.5 py-0.5 rounded">
+                          From DB · {formatFileSize(file.file_size_bytes)}
+                          {file.product_title ? ` (${file.product_title})` : ''}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedDbFiles((prev) => prev.filter((f) => f.id !== file.id))}
+                      className="p-1.5 text-slate-400 hover:text-red-600 rounded-lg transition-colors hover:bg-red-50"
+                      title="Remove"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+
+                {/* 3. Newly Uploaded Files */}
+                {newUploadFiles.map((file, idx) => (
+                  <div key={`${file.name}-${idx}`} className="py-2.5 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="p-1.5 bg-blue-100 text-blue-800 rounded-lg">
+                        <Upload className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-slate-900 truncate">
+                          {file.name}
+                        </p>
+                        <span className="text-[10px] text-blue-700 font-semibold bg-blue-50 px-1.5 py-0.5 rounded">
+                          New Upload · {formatFileSize(file.size)}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setNewUploadFiles((prev) => prev.filter((_, i) => i !== idx))}
+                      className="p-1.5 text-slate-400 hover:text-red-600 rounded-lg transition-colors hover:bg-red-50"
+                      title="Remove"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
-
-          <div className="p-6 border-2 border-dashed border-slate-200 rounded-3xl text-center space-y-2 hover:border-amber-400 transition-colors bg-slate-50/50">
-            {selectedFile ? (
-              <div className="space-y-1">
-                <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto" />
-                <p className="text-xs font-bold text-slate-900">
-                  {selectedFile.name}
-                </p>
-                <p className="text-[11px] font-mono text-emerald-600 font-semibold">
-                  {formatFileSize(selectedFile.size)} ready to upload
-                </p>
-              </div>
-            ) : (
-              <>
-                <Upload className="w-8 h-8 text-slate-400 mx-auto" />
-                <p className="text-xs font-bold text-slate-900">
-                  {isEditing ? 'Click to select a new PDF to replace current document' : 'Choose note PDF to upload'}
-                </p>
-                <p className="text-[11px] text-slate-400">
-                  Strictly PDF format only. File signature will be verified server-side.
-                </p>
-              </>
-            )}
-            <input
-              type="file"
-              accept="application/pdf"
-              onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-              className="text-xs text-slate-500 cursor-pointer pt-2"
-            />
-          </div>
         </div>
+
+        {/* Database Notes Selection Modal */}
+        {isDbModalOpen && (
+          <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-3xl max-w-2xl w-full p-6 sm:p-7 shadow-2xl border border-slate-200 flex flex-col max-h-[85vh] animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div>
+                  <h3 className="text-base font-black text-slate-950">
+                    Select Notes From Database
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Choose existing note documents to bundle into this single purchase.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsDbModalOpen(false)}
+                  className="p-2 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-100"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Search filter */}
+              <div className="py-3">
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    placeholder="Search by file name or note title..."
+                    value={dbSearchTerm}
+                    onChange={(e) => setDbSearchTerm(e.target.value)}
+                    className="w-full pl-9 pr-4 py-2 text-xs border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+              </div>
+
+              {/* Files List */}
+              <div className="flex-1 overflow-y-auto space-y-2 pr-1 divide-y divide-slate-100">
+                {loadingDbFiles ? (
+                  <div className="py-12 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
+                    <span>Loading files from database...</span>
+                  </div>
+                ) : availableDbFiles.length === 0 ? (
+                  <div className="py-12 text-center text-xs text-slate-400">
+                    No files found in database.
+                  </div>
+                ) : (
+                  availableDbFiles
+                    .filter((f) => {
+                      if (!dbSearchTerm.trim()) return true;
+                      const term = dbSearchTerm.toLowerCase();
+                      return (
+                        f.original_filename?.toLowerCase().includes(term) ||
+                        f.product_title?.toLowerCase().includes(term)
+                      );
+                    })
+                    .map((file) => {
+                      const isAttached = existingFiles.some((f) => f.id === file.id);
+                      const isSelected = selectedDbFiles.some((f) => f.id === file.id);
+                      return (
+                        <div
+                          key={file.id}
+                          onClick={() => handleToggleDbFile(file)}
+                          className={`p-3 rounded-xl flex items-center justify-between gap-3 cursor-pointer transition-colors ${
+                            isAttached
+                              ? 'bg-slate-100/70 opacity-60 cursor-not-allowed'
+                              : isSelected
+                              ? 'bg-amber-50 border border-amber-300'
+                              : 'hover:bg-slate-50 border border-transparent'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-5 h-5 rounded-md border flex items-center justify-center flex-shrink-0 transition-colors border-slate-300 bg-white">
+                              {(isAttached || isSelected) && (
+                                <Check className="w-3.5 h-3.5 text-amber-600 stroke-[3]" />
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold text-slate-900 truncate">
+                                {file.original_filename}
+                              </p>
+                              <p className="text-[10px] text-slate-500">
+                                {formatFileSize(file.file_size_bytes)} · {file.product_title || 'Unassigned'}
+                              </p>
+                            </div>
+                          </div>
+                          {isAttached ? (
+                            <span className="text-[10px] font-bold text-slate-500 bg-slate-200 px-2 py-0.5 rounded-full flex-shrink-0">
+                              Already Attached
+                            </span>
+                          ) : isSelected ? (
+                            <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full flex-shrink-0">
+                              Selected
+                            </span>
+                          ) : null}
+                        </div>
+                      );
+                    })
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
+                <span className="text-xs text-slate-500 font-medium">
+                  {selectedDbFiles.length} file{selectedDbFiles.length === 1 ? '' : 's'} chosen
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsDbModalOpen(false)}
+                  className="px-5 py-2 rounded-full bg-slate-950 text-white text-xs font-bold hover:bg-[#FFE500] hover:text-slate-950 transition-all shadow-sm"
+                >
+                  Done (Attach Selected)
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Submit Actions */}
         <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4">

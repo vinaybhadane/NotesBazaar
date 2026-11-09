@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Product } from '@/lib/types';
@@ -14,6 +14,8 @@ import {
   Check,
   AlertCircle,
   Lock,
+  CheckCircle2,
+  BookOpen,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -32,6 +34,40 @@ export default function ProductPurchaseBox({ product }: ProductPurchaseBoxProps)
   const [notifySubmitted, setNotifySubmitted] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewPage, setPreviewPage] = useState(1);
+  const [purchaseStatus, setPurchaseStatus] = useState<{
+    checked: boolean;
+    purchased: boolean;
+    entitlementId?: string | null;
+  }>({ checked: false, purchased: false });
+
+  useEffect(() => {
+    async function checkOwnership() {
+      if (!firebaseUser) {
+        setPurchaseStatus({ checked: true, purchased: false });
+        return;
+      }
+      try {
+        const token = await firebaseUser.getIdToken();
+        const emailParam = firebaseUser.email ? `&email=${encodeURIComponent(firebaseUser.email)}` : '';
+        const res = await fetch(`/api/user/check-purchase?productId=${product.id}${emailParam}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setPurchaseStatus({
+            checked: true,
+            purchased: Boolean(data.purchased),
+            entitlementId: data.entitlementId || null,
+          });
+        } else {
+          setPurchaseStatus({ checked: true, purchased: false });
+        }
+      } catch {
+        setPurchaseStatus({ checked: true, purchased: false });
+      }
+    }
+    checkOwnership();
+  }, [firebaseUser, product.id]);
 
   const isComingSoon = product.is_coming_soon;
   const originalPricePaise = product.price_in_paise;
@@ -141,6 +177,19 @@ export default function ProductPurchaseBox({ product }: ProductPurchaseBoxProps)
             This study guide is in preparation for the SPPU 2024 Pattern. Checkout is strictly disabled until publication.
           </p>
         </div>
+      ) : purchaseStatus.purchased ? (
+        <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-200/80 space-y-2">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+            <span className="text-xs font-bold uppercase tracking-wider text-emerald-900">
+              Already Purchased & Unlocked
+            </span>
+          </div>
+          <p className="text-lg font-black text-slate-950">Active Download Entitlement</p>
+          <p className="text-xs text-emerald-800 leading-relaxed">
+            You already own this study guide! Single purchase only. Your notes are permanently saved in your student account.
+          </p>
+        </div>
       ) : (
         <div>
           <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
@@ -162,8 +211,8 @@ export default function ProductPurchaseBox({ product }: ProductPurchaseBoxProps)
         </div>
       )}
 
-      {/* Coupon Form (Only if purchasable) */}
-      {!isComingSoon && (
+      {/* Coupon Form (Only if purchasable and not already purchased) */}
+      {!isComingSoon && !purchaseStatus.purchased && (
         <div className="pt-2 border-t border-slate-100">
           <form onSubmit={handleApplyCoupon} className="flex gap-2">
             <div className="relative flex-1">
@@ -241,6 +290,23 @@ export default function ProductPurchaseBox({ product }: ProductPurchaseBoxProps)
               ✓ We will email you upon release!
             </div>
           )}
+        </div>
+      ) : purchaseStatus.purchased ? (
+        <div className="space-y-2.5">
+          <a
+            href={purchaseStatus.entitlementId ? `/api/download/${purchaseStatus.entitlementId}` : '/account/downloads'}
+            className="w-full py-3.5 px-6 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black transition-all shadow-md flex items-center justify-center gap-2 group focus:outline-none focus:ring-2 focus:ring-emerald-400 text-center"
+          >
+            <Download className="w-4 h-4" />
+            <span>Download Notes PDF</span>
+          </a>
+          <Link
+            href="/account/downloads"
+            className="w-full py-3 px-6 rounded-2xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold transition-all flex items-center justify-center gap-2 text-center"
+          >
+            <BookOpen className="w-4 h-4 text-emerald-600" />
+            <span>View in My Downloads</span>
+          </Link>
         </div>
       ) : firebaseUser ? (
         <button

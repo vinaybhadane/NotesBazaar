@@ -135,13 +135,23 @@ export default function AccountOverviewPage() {
                   </div>
                 </div>
 
-                <a
-                  href={`/api/download/${e.id}`}
-                  className="px-4 py-2 bg-slate-950 hover:bg-[#FFE500] hover:text-slate-950 text-white rounded-full text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 flex-shrink-0"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Download PDF</span>
-                </a>
+                {e.files && e.files.length > 1 ? (
+                  <Link
+                    href="/account/downloads"
+                    className="px-4 py-2 bg-slate-950 hover:bg-[#FFE500] hover:text-slate-950 text-white rounded-full text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 flex-shrink-0"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>View {e.files.length} Notes →</span>
+                  </Link>
+                ) : (
+                  <a
+                    href={`/api/download/${e.id}`}
+                    className="px-4 py-2 bg-slate-950 hover:bg-[#FFE500] hover:text-slate-950 text-white rounded-full text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 flex-shrink-0"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download PDF</span>
+                  </a>
+                )}
               </div>
             ))}
           </div>

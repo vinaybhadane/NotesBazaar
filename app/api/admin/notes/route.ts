@@ -90,24 +90,61 @@ export async function POST(req: NextRequest) {
     // 1. Create the product FIRST so foreign key constraint fk_files_product is satisfied!
     const saved = await db.createProduct(newProduct);
 
-    // 2. Upload file and record in product_files now that product exists in Azure SQL
-    if (file && file.size > 0) {
+    // 2. Upload newly provided file(s) and record in product_files
+    let totalUploadedBytes = 0;
+
+    // Collect all uploaded files (single or multiple)
+    const uploadedFiles: File[] = [];
+    if (contentType.includes('multipart/form-data')) {
+      const formData = await req.formData().catch(() => null);
+      if (formData) {
+        const multiple = formData.getAll('files') as File[];
+        for (const f of multiple) {
+          if (f && f.size > 0) uploadedFiles.push(f);
+        }
+        const single = formData.get('file') as File | null;
+        if (single && single.size > 0 && !uploadedFiles.some((f) => f.name === single.name && f.size === single.size)) {
+          uploadedFiles.push(single);
+        }
+
+        // Attach selected existing files from database if any
+        const selectedExistingRaw = formData.get('selected_file_ids');
+        if (selectedExistingRaw && typeof selectedExistingRaw === 'string') {
+          try {
+            const fileIds: string[] = JSON.parse(selectedExistingRaw);
+            for (const fileId of fileIds) {
+              await db.attachExistingFileToProduct(saved.id, fileId);
+            }
+          } catch (e) {
+            console.warn('[API /api/admin/notes] Error attaching existing DB files:', e);
+          }
+        }
+      }
+    } else if (file && file.size > 0) {
+      uploadedFiles.push(file);
+    }
+
+    for (const f of uploadedFiles) {
       try {
-        const arrayBuf = await file.arrayBuffer();
+        const arrayBuf = await f.arrayBuffer();
         const buffer = Buffer.from(arrayBuf);
-        const uploadResult = await storage.uploadPrivateNote(buffer, file.name, saved.id);
+        const uploadResult = await storage.uploadPrivateNote(buffer, f.name, saved.id);
         await db.recordProductFile({
           product_id: saved.id,
           blob_container: uploadResult.container,
           blob_name: uploadResult.blobName,
-          original_filename: file.name,
+          original_filename: f.name,
           file_size_bytes: uploadResult.size,
-          mime_type: file.type || 'application/pdf',
+          mime_type: f.type || 'application/pdf',
         });
-        saved.file_size_bytes = uploadResult.size;
+        totalUploadedBytes += uploadResult.size;
       } catch (fileErr) {
         console.error('[API /api/admin/notes] File upload warning:', fileErr);
       }
+    }
+
+    if (totalUploadedBytes > 0) {
+      saved.file_size_bytes = totalUploadedBytes;
     }
 
     // Audit log

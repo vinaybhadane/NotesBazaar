@@ -59,6 +59,7 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
     limit: 4,
   });
 
+  const attachedFiles = await db.getProductFilesByProductId(product.id);
   const filteredRelated = relatedProducts.filter((p) => p.id !== product.id).slice(0, 3);
 
   // JSON-LD Structured Data
@@ -185,6 +186,46 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
               <p>{product.full_description}</p>
             </div>
           </div>
+
+          {/* Multi-Note Pack Bundle (If multiple documents are included in this single purchase) */}
+          {attachedFiles && attachedFiles.length > 1 && (
+            <div className="space-y-3 pt-4 border-t border-slate-200">
+              <div className="flex items-center gap-2">
+                <span className="pill-badge pill-badge-yellow text-[11px]">SINGLE PURCHASE PACK</span>
+                <span className="text-xs font-bold text-slate-500">
+                  Includes {attachedFiles.length} Separate Documents
+                </span>
+              </div>
+              <h2 className="text-lg font-bold text-slate-950">
+                Documents Included in this Single Purchase
+              </h2>
+              <div className="divide-y divide-slate-100 bg-slate-50 rounded-2xl p-4 border border-slate-200 space-y-1">
+                {attachedFiles.map((file, idx) => (
+                  <div key={file.id} className="py-2.5 flex items-center justify-between gap-3 first:pt-0 last:pb-0">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="p-2 bg-white rounded-xl border border-slate-200 text-slate-700 flex-shrink-0">
+                        <FileText className="w-4 h-4 text-emerald-600" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-slate-900 truncate">
+                          {file.original_filename}
+                        </p>
+                        <span className="text-[10px] text-slate-500">
+                          Document #{idx + 1} · PDF Format
+                        </span>
+                      </div>
+                    </div>
+                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full flex-shrink-0">
+                      Included
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[11px] text-slate-500">
+                ✓ All {attachedFiles.length} note files are permanently unlocked in your student account immediately after payment.
+              </p>
+            </div>
+          )}
 
           {/* Topics & Units Covered */}
           {product.topics_covered && product.topics_covered.length > 0 && (

@@ -160,7 +160,7 @@ function readLocalData(): LocalDbSchema {
 // -----------------------------------------------------------------------------
 let memoryCache: LocalDbSchema | null = null;
 let lastCacheSync = 0;
-const CACHE_TTL_MS = 15000; // 15 seconds TTL for high performance & fresh data
+const CACHE_TTL_MS = 60000; // 60 seconds TTL for blazing fast catalog queries (instantly cleared via clearDbCache on mutations)
 
 export function clearDbCache() {
   memoryCache = null;
@@ -179,6 +179,7 @@ async function getStore(): Promise<LocalDbSchema> {
   }
 
   try {
+    // Only query catalog-specific tables on the periodic store sync (huge performance win!)
     const [
       branchesRes,
       yearsRes,
@@ -188,11 +189,6 @@ async function getStore(): Promise<LocalDbSchema> {
       offersRes,
       bannersRes,
       settingsRes,
-      usersRes,
-      ordersRes,
-      itemsRes,
-      paymentsRes,
-      entitlementsRes,
     ] = await Promise.all([
       pool.request().query('SELECT * FROM branches WHERE is_active = 1 ORDER BY sort_order'),
       pool.request().query('SELECT * FROM academic_years WHERE is_active = 1 ORDER BY sort_order'),
@@ -202,11 +198,6 @@ async function getStore(): Promise<LocalDbSchema> {
       pool.request().query('SELECT * FROM offers WHERE is_active = 1'),
       pool.request().query('SELECT * FROM banners WHERE is_active = 1 ORDER BY display_order'),
       pool.request().query('SELECT * FROM site_settings'),
-      pool.request().query('SELECT * FROM users'),
-      pool.request().query('SELECT * FROM orders ORDER BY created_at DESC'),
-      pool.request().query('SELECT * FROM order_items'),
-      pool.request().query('SELECT * FROM payments'),
-      pool.request().query('SELECT * FROM download_entitlements'),
     ]);
 
     const settingsObj: Record<string, any> = {};
@@ -243,59 +234,17 @@ async function getStore(): Promise<LocalDbSchema> {
     }));
 
     memoryCache = {
-      users: usersRes.recordset.map((u: any) => ({
-        id: u.id,
-        firebase_uid: u.firebase_uid,
-        email: u.email,
-        display_name: u.display_name,
-        role: u.role,
-        status: u.status,
-        created_at: u.created_at ? new Date(u.created_at).toISOString() : new Date().toISOString(),
-        updated_at: u.updated_at ? new Date(u.updated_at).toISOString() : new Date().toISOString(),
-      })),
+      users: [],
       branches: branchesRes.recordset,
       academic_years: yearsRes.recordset,
       patterns: patternsRes.recordset,
       subjects: subjectsRes.recordset,
       products: productsMapped,
-      orders: ordersRes.recordset.map((o: any) => ({
-        id: o.id,
-        user_id: o.user_id,
-        order_number: o.order_number || o.id,
-        total_amount_in_paise: o.total_amount_in_paise,
-        discount_amount_in_paise: o.discount_in_paise || 0,
-        final_amount_in_paise: o.total_amount_in_paise,
-        currency: o.currency || 'INR',
-        status: o.status,
-        razorpay_order_id: o.razorpay_order_id,
-        razorpay_payment_id: o.razorpay_payment_id,
-        customer_email: o.customer_email,
-        customer_name: o.customer_name,
-        created_at: o.created_at ? new Date(o.created_at).toISOString() : new Date().toISOString(),
-        updated_at: o.updated_at ? new Date(o.updated_at).toISOString() : new Date().toISOString(),
-      })),
-      order_items: itemsRes.recordset.map((it: any) => ({
-        id: it.id,
-        order_id: it.order_id,
-        product_id: it.product_id,
-        quantity: it.quantity,
-        unit_price_in_paise: it.price_in_paise,
-        discount_amount_in_paise: 0,
-        final_price_in_paise: it.price_in_paise,
-        product_title: it.product_title,
-      })),
-      payments: paymentsRes.recordset,
+      orders: [],
+      order_items: [],
+      payments: [],
       webhook_events: [],
-      download_entitlements: entitlementsRes.recordset.map((e: any) => ({
-        id: e.id,
-        user_id: e.user_id,
-        product_id: e.product_id,
-        order_id: e.order_id,
-        status: e.status || (e.is_active ? 'active' : 'revoked'),
-        granted_at: e.granted_at ? new Date(e.granted_at).toISOString() : (e.created_at ? new Date(e.created_at).toISOString() : new Date().toISOString()),
-        expires_at: e.expires_at ? new Date(e.expires_at).toISOString() : null,
-        created_at: e.created_at ? new Date(e.created_at).toISOString() : new Date().toISOString(),
-      })),
+      download_entitlements: [],
       download_audit_logs: [],
       banners: bannersRes.recordset.map((b: any) => ({
         id: b.id,
@@ -960,7 +909,9 @@ export const db = {
             @id, @product_id, 'azure_blob', @blob_container, @blob_name,
             @original_filename, @mime_type, @file_size_bytes, 1, 'completed'
           );
-          UPDATE products SET file_size_bytes = @file_size_bytes WHERE id = @product_id;
+          UPDATE products
+          SET file_size_bytes = (SELECT ISNULL(SUM(file_size_bytes), 0) FROM product_files WHERE product_id = @product_id)
+          WHERE id = @product_id;
         `);
     }
 
@@ -1006,6 +957,154 @@ export const db = {
       }
     }
     return null;
+  },
+
+  async getProductFilesByProductId(productId: string): Promise<ProductFile[]> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const res = await pool.request()
+          .input('product_id', sql.NVarChar(50), productId)
+          .query('SELECT * FROM product_files WHERE product_id = @product_id ORDER BY created_at ASC');
+        return res.recordset.map((r: any) => ({
+          id: r.id,
+          product_id: r.product_id,
+          storage_provider: r.storage_provider || 'azure_blob',
+          blob_container: r.blob_container,
+          blob_name: r.blob_name,
+          original_filename: r.original_filename,
+          mime_type: r.mime_type || 'application/pdf',
+          file_size_bytes: Number(r.file_size_bytes || 0),
+          sha256_checksum: r.sha256_checksum,
+          version: r.version || 1,
+          upload_status: r.upload_status || 'completed',
+          created_at: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+        }));
+      } catch (err) {
+        console.warn('[db.getProductFilesByProductId error]:', err);
+      }
+    }
+    return [];
+  },
+
+  async getAllUploadedFiles(): Promise<Array<{
+    id: string;
+    product_id: string;
+    blob_container: string;
+    blob_name: string;
+    original_filename: string;
+    mime_type: string;
+    file_size_bytes: number;
+    created_at: string;
+    product_title?: string;
+  }>> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const res = await pool.request().query(`
+          SELECT pf.id, pf.product_id, pf.blob_container, pf.blob_name,
+                 pf.original_filename, pf.mime_type, pf.file_size_bytes, pf.created_at,
+                 p.title as product_title
+          FROM product_files pf
+          LEFT JOIN products p ON pf.product_id = p.id
+          ORDER BY pf.created_at DESC
+        `);
+        return res.recordset.map((r: any) => ({
+          id: r.id,
+          product_id: r.product_id,
+          blob_container: r.blob_container,
+          blob_name: r.blob_name,
+          original_filename: r.original_filename,
+          mime_type: r.mime_type || 'application/pdf',
+          file_size_bytes: Number(r.file_size_bytes || 0),
+          created_at: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+          product_title: r.product_title || undefined,
+        }));
+      } catch (err) {
+        console.warn('[db.getAllUploadedFiles error]:', err);
+      }
+    }
+    return [];
+  },
+
+  async attachExistingFileToProduct(productId: string, existingFileId: string): Promise<ProductFile | null> {
+    const pool = await getSqlPool();
+    if (!pool) return null;
+    try {
+      const sourceRes = await pool.request()
+        .input('file_id', sql.NVarChar(50), existingFileId)
+        .query('SELECT TOP 1 * FROM product_files WHERE id = @file_id');
+      if (sourceRes.recordset.length === 0) return null;
+      const src = sourceRes.recordset[0];
+      const newFileId = `pf_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      await pool.request()
+        .input('id', sql.NVarChar(50), newFileId)
+        .input('product_id', sql.NVarChar(50), productId)
+        .input('storage_provider', sql.NVarChar(50), src.storage_provider || 'azure_blob')
+        .input('blob_container', sql.NVarChar(100), src.blob_container)
+        .input('blob_name', sql.NVarChar(500), src.blob_name)
+        .input('original_filename', sql.NVarChar(255), src.original_filename)
+        .input('mime_type', sql.NVarChar(100), src.mime_type || 'application/pdf')
+        .input('file_size_bytes', sql.BigInt, src.file_size_bytes)
+        .query(`
+          INSERT INTO product_files (
+            id, product_id, storage_provider, blob_container, blob_name,
+            original_filename, mime_type, file_size_bytes, version, upload_status
+          ) VALUES (
+            @id, @product_id, @storage_provider, @blob_container, @blob_name,
+            @original_filename, @mime_type, @file_size_bytes, 1, 'completed'
+          );
+          UPDATE products
+          SET file_size_bytes = (SELECT ISNULL(SUM(file_size_bytes), 0) FROM product_files WHERE product_id = @product_id)
+          WHERE id = @product_id;
+        `);
+      clearDbCache();
+      return {
+        id: newFileId,
+        product_id: productId,
+        storage_provider: src.storage_provider || 'azure_blob',
+        blob_container: src.blob_container,
+        blob_name: src.blob_name,
+        original_filename: src.original_filename,
+        mime_type: src.mime_type || 'application/pdf',
+        file_size_bytes: Number(src.file_size_bytes || 0),
+        version: 1,
+        upload_status: 'completed',
+        created_at: new Date().toISOString(),
+      };
+    } catch (err) {
+      console.warn('[db.attachExistingFileToProduct error]:', err);
+      return null;
+    }
+  },
+
+  async deleteProductFile(fileId: string): Promise<boolean> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const fileRes = await pool.request()
+          .input('file_id', sql.NVarChar(50), fileId)
+          .query('SELECT TOP 1 product_id FROM product_files WHERE id = @file_id');
+        const productId = fileRes.recordset[0]?.product_id;
+        await pool.request()
+          .input('file_id', sql.NVarChar(50), fileId)
+          .query('DELETE FROM product_files WHERE id = @file_id');
+        if (productId) {
+          await pool.request()
+            .input('product_id', sql.NVarChar(50), productId)
+            .query(`
+              UPDATE products
+              SET file_size_bytes = (SELECT ISNULL(SUM(file_size_bytes), 0) FROM product_files WHERE product_id = @product_id)
+              WHERE id = @product_id;
+            `);
+        }
+        clearDbCache();
+        return true;
+      } catch (err) {
+        console.warn('[db.deleteProductFile error]:', err);
+      }
+    }
+    return false;
   },
 
   // ---------------------------------------------------------------------------
@@ -1062,6 +1161,73 @@ export const db = {
   },
 
   async getOrderById(id: string): Promise<Order | null> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const orderRes = await pool.request()
+          .input('id', sql.NVarChar(50), id)
+          .query('SELECT TOP 1 * FROM orders WHERE id = @id');
+
+        if (orderRes.recordset.length > 0) {
+          const o = orderRes.recordset[0];
+          const itemsRes = await pool.request()
+            .input('order_id', sql.NVarChar(50), id)
+            .query(`
+              SELECT oi.*, p.title as product_title, p.file_format as product_file_format,
+                     p.file_size_bytes as product_file_size_bytes, p.slug as product_slug
+              FROM order_items oi
+              LEFT JOIN products p ON oi.product_id = p.id
+              WHERE oi.order_id = @order_id
+            `);
+
+          let status = o.status as Order['status'];
+          const createdAt = o.created_at ? new Date(o.created_at) : new Date();
+          const ageMs = Date.now() - createdAt.getTime();
+          const FIFTEEN_MIN_MS = 15 * 60 * 1000;
+
+          // Auto-cancel if pending for more than 15 minutes
+          if ((status === 'pending' || status === 'created') && ageMs > FIFTEEN_MIN_MS) {
+            status = 'cancelled';
+            await pool.request()
+              .input('id', sql.NVarChar(50), id)
+              .query("UPDATE orders SET status = 'cancelled', updated_at = GETUTCDATE() WHERE id = @id");
+          }
+
+          return {
+            id: o.id,
+            user_id: o.user_id,
+            order_number: o.order_number,
+            customer_email: o.customer_email || 'student@notesbazaar.local',
+            customer_name: o.customer_name || undefined,
+            total_amount_in_paise: Number(o.total_amount_in_paise),
+            discount_amount_in_paise: Number(o.discount_amount_in_paise || 0),
+            final_amount_in_paise: Number(o.final_amount_in_paise),
+            currency: o.currency || 'INR',
+            status,
+            razorpay_order_id: o.razorpay_order_id,
+            razorpay_payment_id: o.razorpay_payment_id,
+            created_at: createdAt.toISOString(),
+            updated_at: o.updated_at ? new Date(o.updated_at).toISOString() : createdAt.toISOString(),
+            items: itemsRes.recordset.map((it: any) => ({
+              id: it.id,
+              order_id: it.order_id,
+              product_id: it.product_id,
+              quantity: Number(it.quantity || 1),
+              unit_price_in_paise: Number(it.unit_price_in_paise || it.price_in_paise || 0),
+              discount_amount_in_paise: Number(it.discount_amount_in_paise || 0),
+              final_price_in_paise: Number(it.final_price_in_paise),
+              product_title: it.product_title,
+              product_file_format: it.product_file_format,
+              product_file_size_bytes: it.product_file_size_bytes ? Number(it.product_file_size_bytes) : undefined,
+              product_slug: it.product_slug,
+            })),
+          };
+        }
+      } catch (err) {
+        console.error('[db.getOrderById SQL error]:', err);
+      }
+    }
+
     const data = await getStore();
     const order = data.orders.find((o) => o.id === id);
     if (!order) return null;
@@ -1076,13 +1242,35 @@ export const db = {
       };
     });
 
+    let currentStatus = order.status;
+    const createdAt = new Date(order.created_at);
+    if ((currentStatus === 'pending' || currentStatus === 'created') && Date.now() - createdAt.getTime() > 15 * 60 * 1000) {
+      currentStatus = 'cancelled';
+      order.status = 'cancelled';
+      writeLocalData(data);
+    }
+
     return {
       ...order,
+      status: currentStatus,
       items: enrichedItems,
     };
   },
 
   async getOrderByRazorpayOrderId(rpOrderId: string): Promise<Order | null> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const res = await pool.request()
+          .input('rp_order_id', sql.NVarChar(100), rpOrderId)
+          .query('SELECT TOP 1 id FROM orders WHERE razorpay_order_id = @rp_order_id');
+        if (res.recordset.length > 0) {
+          return this.getOrderById(res.recordset[0].id);
+        }
+      } catch (err) {
+        console.error('[db.getOrderByRazorpayOrderId SQL error]:', err);
+      }
+    }
     const data = await getStore();
     const order = data.orders.find((o) => o.razorpay_order_id === rpOrderId);
     if (!order) return null;
@@ -1128,6 +1316,88 @@ export const db = {
   },
 
   async getOrdersByUser(userId: string, userEmail?: string): Promise<Order[]> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const emailLower = (userEmail || '').trim().toLowerCase();
+        const ordersRes = await pool.request()
+          .input('user_id', sql.NVarChar(50), userId)
+          .input('email', sql.NVarChar(255), emailLower)
+          .query(`
+            SELECT * FROM orders
+            WHERE user_id = @user_id OR (LEN(@email) > 0 AND LOWER(customer_email) = @email)
+            ORDER BY created_at DESC
+          `);
+
+        if (ordersRes.recordset.length > 0) {
+          const orderIds = ordersRes.recordset.map((o: any) => o.id);
+          const itemsRes = await pool.request().query(`
+            SELECT oi.*, p.title as product_title, p.slug as product_slug
+            FROM order_items oi
+            LEFT JOIN products p ON oi.product_id = p.id
+            WHERE oi.order_id IN (${orderIds.map((id: string) => `'${id.replace(/'/g, "''")}'`).join(',')})
+          `);
+
+          const FIFTEEN_MIN_MS = 15 * 60 * 1000;
+          const now = Date.now();
+          const itemsByOrderId: Record<string, OrderItem[]> = {};
+
+          for (const it of itemsRes.recordset) {
+            if (!itemsByOrderId[it.order_id]) itemsByOrderId[it.order_id] = [];
+            itemsByOrderId[it.order_id].push({
+              id: it.id,
+              order_id: it.order_id,
+              product_id: it.product_id,
+              quantity: Number(it.quantity || 1),
+              unit_price_in_paise: Number(it.unit_price_in_paise || it.price_in_paise || 0),
+              discount_amount_in_paise: Number(it.discount_amount_in_paise || 0),
+              final_price_in_paise: Number(it.final_price_in_paise),
+              product_title: it.product_title,
+              product_slug: it.product_slug,
+            });
+          }
+
+          const results: Order[] = [];
+          for (const o of ordersRes.recordset) {
+            let status = o.status as Order['status'];
+            const createdAt = o.created_at ? new Date(o.created_at) : new Date();
+            const ageMs = now - createdAt.getTime();
+
+            // 15-minute auto cancellation
+            if ((status === 'pending' || status === 'created') && ageMs > FIFTEEN_MIN_MS) {
+              status = 'cancelled';
+              pool.request()
+                .input('id', sql.NVarChar(50), o.id)
+                .query("UPDATE orders SET status = 'cancelled', updated_at = GETUTCDATE() WHERE id = @id")
+                .catch(() => {});
+            }
+
+            results.push({
+              id: o.id,
+              user_id: o.user_id,
+              order_number: o.order_number,
+              customer_email: o.customer_email || 'student@notesbazaar.local',
+              customer_name: o.customer_name || undefined,
+              total_amount_in_paise: Number(o.total_amount_in_paise),
+              discount_amount_in_paise: Number(o.discount_amount_in_paise || 0),
+              final_amount_in_paise: Number(o.final_amount_in_paise),
+              currency: o.currency || 'INR',
+              status,
+              razorpay_order_id: o.razorpay_order_id,
+              razorpay_payment_id: o.razorpay_payment_id,
+              created_at: createdAt.toISOString(),
+              updated_at: o.updated_at ? new Date(o.updated_at).toISOString() : createdAt.toISOString(),
+              items: itemsByOrderId[o.id] || [],
+            });
+          }
+          return results;
+        }
+        return [];
+      } catch (err) {
+        console.error('[db.getOrdersByUser SQL error]:', err);
+      }
+    }
+
     const data = await getStore();
     const emailLower = userEmail?.toLowerCase();
     const userOrders = data.orders
@@ -1135,6 +1405,11 @@ export const db = {
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
     return userOrders.map((o) => {
+      let status = o.status;
+      if ((status === 'pending' || status === 'created') && Date.now() - new Date(o.created_at).getTime() > 15 * 60 * 1000) {
+        status = 'cancelled';
+        o.status = 'cancelled';
+      }
       const items = data.order_items.filter((it) => it.order_id === o.id).map((it) => {
         const prod = data.products.find((p) => p.id === it.product_id);
         return {
@@ -1143,11 +1418,64 @@ export const db = {
           product_slug: prod?.slug,
         };
       });
-      return { ...o, items };
+      return { ...o, status, items };
     });
   },
 
   async getAllOrders(): Promise<Order[]> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const ordersRes = await pool.request().query('SELECT TOP 100 * FROM orders ORDER BY created_at DESC');
+        if (ordersRes.recordset.length > 0) {
+          const orderIds = ordersRes.recordset.map((o: any) => o.id);
+          const itemsRes = await pool.request().query(`
+            SELECT oi.*, p.title as product_title, p.slug as product_slug
+            FROM order_items oi
+            LEFT JOIN products p ON oi.product_id = p.id
+            WHERE oi.order_id IN (${orderIds.map((id: string) => `'${id.replace(/'/g, "''")}'`).join(',')})
+          `);
+
+          const itemsByOrderId: Record<string, OrderItem[]> = {};
+          for (const it of itemsRes.recordset) {
+            if (!itemsByOrderId[it.order_id]) itemsByOrderId[it.order_id] = [];
+            itemsByOrderId[it.order_id].push({
+              id: it.id,
+              order_id: it.order_id,
+              product_id: it.product_id,
+              quantity: Number(it.quantity || 1),
+              unit_price_in_paise: Number(it.unit_price_in_paise || it.price_in_paise || 0),
+              discount_amount_in_paise: Number(it.discount_amount_in_paise || 0),
+              final_price_in_paise: Number(it.final_price_in_paise),
+              product_title: it.product_title,
+              product_slug: it.product_slug,
+            });
+          }
+
+          return ordersRes.recordset.map((o: any) => ({
+            id: o.id,
+            user_id: o.user_id,
+            order_number: o.order_number || o.id,
+            customer_email: o.customer_email || 'student@notesbazaar.local',
+            customer_name: o.customer_name || undefined,
+            total_amount_in_paise: Number(o.total_amount_in_paise),
+            discount_amount_in_paise: Number(o.discount_amount_in_paise || 0),
+            final_amount_in_paise: Number(o.final_amount_in_paise),
+            currency: o.currency || 'INR',
+            status: o.status,
+            razorpay_order_id: o.razorpay_order_id,
+            razorpay_payment_id: o.razorpay_payment_id,
+            created_at: o.created_at ? new Date(o.created_at).toISOString() : new Date().toISOString(),
+            updated_at: o.updated_at ? new Date(o.updated_at).toISOString() : new Date().toISOString(),
+            items: itemsByOrderId[o.id] || [],
+          }));
+        }
+        return [];
+      } catch (err) {
+        console.error('[db.getAllOrders SQL error]:', err);
+      }
+    }
+
     const data = await getStore();
     return data.orders
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
@@ -1263,6 +1591,84 @@ export const db = {
   },
 
   async getEntitlementsByUser(userId: string, userEmail?: string): Promise<DownloadEntitlement[]> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const emailLower = (userEmail || '').trim().toLowerCase();
+        const entRes = await pool.request()
+          .input('user_id', sql.NVarChar(50), userId)
+          .input('email', sql.NVarChar(255), emailLower)
+          .query(`
+            SELECT de.*, p.title as product_title, p.slug as product_slug,
+                   p.short_description as product_short_description,
+                   p.file_size_bytes as product_file_size_bytes,
+                   p.branch_id, p.year_id, p.pattern_id, p.subject_id
+            FROM download_entitlements de
+            LEFT JOIN products p ON de.product_id = p.id
+            WHERE (
+              de.user_id = @user_id
+              OR (LEN(@email) > 0 AND de.user_id IN (SELECT id FROM users WHERE LOWER(email) = @email))
+              OR (LEN(@email) > 0 AND de.order_id IN (SELECT id FROM orders WHERE LOWER(customer_email) = @email))
+            )
+            AND de.status = 'active'
+            ORDER BY de.granted_at DESC
+          `);
+
+        if (entRes.recordset.length > 0) {
+          const productIds = Array.from(new Set(entRes.recordset.map((r: any) => r.product_id)));
+          const filesRes = await pool.request().query(`
+            SELECT * FROM product_files
+            WHERE product_id IN (${productIds.map((pid: string) => `'${pid.replace(/'/g, "''")}'`).join(',')})
+            ORDER BY created_at ASC
+          `);
+
+          const filesByProductId: Record<string, ProductFile[]> = {};
+          for (const f of filesRes.recordset) {
+            if (!filesByProductId[f.product_id]) filesByProductId[f.product_id] = [];
+            filesByProductId[f.product_id].push({
+              id: f.id,
+              product_id: f.product_id,
+              storage_provider: f.storage_provider || 'azure_blob',
+              blob_container: f.blob_container,
+              blob_name: f.blob_name,
+              original_filename: f.original_filename,
+              mime_type: f.mime_type || 'application/pdf',
+              file_size_bytes: Number(f.file_size_bytes || 0),
+              version: f.version || 1,
+              upload_status: f.upload_status || 'completed',
+              created_at: f.created_at ? new Date(f.created_at).toISOString() : new Date().toISOString(),
+            });
+          }
+
+          return entRes.recordset.map((r: any) => ({
+            id: r.id,
+            user_id: r.user_id,
+            product_id: r.product_id,
+            order_id: r.order_id,
+            status: r.status,
+            granted_at: r.granted_at ? new Date(r.granted_at).toISOString() : new Date().toISOString(),
+            expires_at: r.expires_at ? new Date(r.expires_at).toISOString() : null,
+            created_at: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+            product: {
+              id: r.product_id,
+              title: r.product_title || 'Engineering Notes',
+              slug: r.product_slug || '',
+              short_description: r.product_short_description || '',
+              branch_id: r.branch_id || '',
+              year_id: r.year_id || '',
+              pattern_id: r.pattern_id || '',
+              subject_id: r.subject_id || '',
+              file_size_bytes: Number(r.product_file_size_bytes || 0),
+            } as any,
+            files: filesByProductId[r.product_id] || [],
+          }));
+        }
+        return [];
+      } catch (err) {
+        console.error('[db.getEntitlementsByUser SQL error]:', err);
+      }
+    }
+
     const data = await getStore();
     const emailLower = userEmail?.toLowerCase();
     const userOrderIds = new Set(
@@ -1281,11 +1687,40 @@ export const db = {
       return {
         ...e,
         product: prod,
+        files: [],
       };
     });
   },
 
   async getEntitlementById(entitlementId: string): Promise<DownloadEntitlement | null> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const res = await pool.request()
+          .input('id', sql.NVarChar(50), entitlementId)
+          .query('SELECT TOP 1 * FROM download_entitlements WHERE id = @id');
+        if (res.recordset.length > 0) {
+          const e = res.recordset[0];
+          const prod = await this.getProductById(e.product_id);
+          const files = await this.getProductFilesByProductId(e.product_id);
+          return {
+            id: e.id,
+            user_id: e.user_id,
+            product_id: e.product_id,
+            order_id: e.order_id,
+            status: e.status || 'active',
+            granted_at: e.granted_at ? new Date(e.granted_at).toISOString() : new Date().toISOString(),
+            expires_at: e.expires_at ? new Date(e.expires_at).toISOString() : null,
+            created_at: e.created_at ? new Date(e.created_at).toISOString() : new Date().toISOString(),
+            product: prod || undefined,
+            files,
+          };
+        }
+      } catch (err) {
+        console.error('[db.getEntitlementById SQL error]:', err);
+      }
+    }
+
     const data = await getStore();
     const e = data.download_entitlements.find((item) => item.id === entitlementId);
     if (!e) return null;
@@ -1293,13 +1728,48 @@ export const db = {
     return {
       ...e,
       product: prod,
+      files: [],
     };
   },
 
-  async hasEntitlement(userId: string, productId: string): Promise<boolean> {
+  async hasEntitlement(userId: string, productId: string, userEmail?: string): Promise<boolean> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const emailLower = (userEmail || '').trim().toLowerCase();
+        const res = await pool.request()
+          .input('product_id', sql.NVarChar(50), productId)
+          .input('user_id', sql.NVarChar(50), userId)
+          .input('email', sql.NVarChar(255), emailLower)
+          .query(`
+            SELECT TOP 1 1 as has_ent FROM download_entitlements de
+            WHERE de.product_id = @product_id
+              AND de.status = 'active'
+              AND (
+                de.user_id = @user_id
+                OR (LEN(@email) > 0 AND de.user_id IN (SELECT id FROM users WHERE LOWER(email) = @email))
+                OR (LEN(@email) > 0 AND de.order_id IN (SELECT id FROM orders WHERE LOWER(customer_email) = @email))
+              )
+          `);
+        if (res.recordset.length > 0) return true;
+      } catch (err) {
+        console.error('[db.hasEntitlement SQL error]:', err);
+      }
+    }
+
     const data = await getStore();
+    const emailLower = userEmail?.toLowerCase();
+    const userOrderIds = new Set(
+      data.orders
+        .filter((o) => o.user_id === userId || (emailLower && o.customer_email?.toLowerCase() === emailLower))
+        .map((o) => o.id)
+    );
+
     return data.download_entitlements.some(
-      (e) => e.user_id === userId && e.product_id === productId && e.status === 'active'
+      (e) =>
+        e.product_id === productId &&
+        (e.status === 'active' || (e as any).is_active === 1) &&
+        (e.user_id === userId || userOrderIds.has(e.order_id))
     );
   },
 
@@ -1589,16 +2059,80 @@ export const db = {
   },
 
   async getUserByFirebaseUid(uid: string): Promise<User | null> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const res = await pool.request()
+          .input('uid', sql.NVarChar(128), uid)
+          .query('SELECT TOP 1 * FROM users WHERE firebase_uid = @uid');
+        if (res.recordset.length > 0) {
+          const r = res.recordset[0];
+          return {
+            id: r.id,
+            firebase_uid: r.firebase_uid,
+            email: r.email,
+            display_name: r.display_name,
+            role: r.role || 'student',
+            status: r.status || 'active',
+            created_at: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+            updated_at: r.updated_at ? new Date(r.updated_at).toISOString() : new Date().toISOString(),
+          };
+        }
+      } catch (err) {
+        console.error('[db.getUserByFirebaseUid SQL error]:', err);
+      }
+    }
     const data = await getStore();
     return data.users.find((u) => u.firebase_uid === uid) || null;
   },
 
   async getUserByEmail(email: string): Promise<User | null> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const res = await pool.request()
+          .input('email', sql.NVarChar(255), email.trim().toLowerCase())
+          .query('SELECT TOP 1 * FROM users WHERE LOWER(email) = @email');
+        if (res.recordset.length > 0) {
+          const r = res.recordset[0];
+          return {
+            id: r.id,
+            firebase_uid: r.firebase_uid,
+            email: r.email,
+            display_name: r.display_name,
+            role: r.role || 'student',
+            status: r.status || 'active',
+            created_at: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+            updated_at: r.updated_at ? new Date(r.updated_at).toISOString() : new Date().toISOString(),
+          };
+        }
+      } catch (err) {
+        console.error('[db.getUserByEmail SQL error]:', err);
+      }
+    }
     const data = await getStore();
     return data.users.find((u) => u.email.toLowerCase() === email.toLowerCase()) || null;
   },
 
   async getAllUsers(): Promise<User[]> {
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const res = await pool.request().query('SELECT TOP 100 * FROM users ORDER BY created_at DESC');
+        return res.recordset.map((u: any) => ({
+          id: u.id,
+          firebase_uid: u.firebase_uid,
+          email: u.email,
+          display_name: u.display_name,
+          role: u.role || 'student',
+          status: u.status || 'active',
+          created_at: u.created_at ? new Date(u.created_at).toISOString() : new Date().toISOString(),
+          updated_at: u.updated_at ? new Date(u.updated_at).toISOString() : new Date().toISOString(),
+        }));
+      } catch (err) {
+        console.error('[db.getAllUsers SQL error]:', err);
+      }
+    }
     const data = await getStore();
     return data.users.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   },
@@ -1678,9 +2212,39 @@ export const db = {
     const totalPublished = data.products.filter((p) => p.publication_status === 'published').length;
     const totalDrafts = data.products.filter((p) => p.publication_status === 'draft').length;
     const totalComingSoon = data.products.filter((p) => p.is_coming_soon).length;
+
+    const pool = await getSqlPool();
+    if (pool) {
+      try {
+        const statsRes = await pool.request().query(`
+          SELECT
+            (SELECT COUNT(*) FROM orders) as totalOrders,
+            (SELECT COUNT(*) FROM orders WHERE status = 'paid') as successfulPayments,
+            (SELECT COUNT(*) FROM orders WHERE status = 'failed' OR status = 'cancelled') as failedPayments,
+            (SELECT COUNT(*) FROM orders WHERE status = 'pending' OR status = 'created') as pendingPayments,
+            (SELECT ISNULL(SUM(final_amount_in_paise), 0) FROM orders WHERE status = 'paid') as revenueTotalInPaise,
+            (SELECT COUNT(*) FROM users) as totalUsers
+        `);
+        const row = statsRes.recordset[0];
+        return {
+          totalPublished,
+          totalDrafts,
+          totalComingSoon,
+          totalOrders: Number(row.totalOrders || 0),
+          successfulPayments: Number(row.successfulPayments || 0),
+          failedPayments: Number(row.failedPayments || 0),
+          pendingPayments: Number(row.pendingPayments || 0),
+          revenueTotalInPaise: Number(row.revenueTotalInPaise || 0),
+          totalUsers: Number(row.totalUsers || 0),
+        };
+      } catch (err) {
+        console.error('[db.getAdminStats SQL error]:', err);
+      }
+    }
+
     const totalOrders = data.orders.length;
     const paidOrders = data.orders.filter((o) => o.status === 'paid');
-    const failedOrders = data.orders.filter((o) => o.status === 'failed');
+    const failedOrders = data.orders.filter((o) => o.status === 'failed' || o.status === 'cancelled');
     const pendingOrders = data.orders.filter((o) => o.status === 'pending' || o.status === 'created');
     const totalRevenuePaise = paidOrders.reduce((sum, o) => sum + o.final_amount_in_paise, 0);
 

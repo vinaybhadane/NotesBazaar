@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Order } from '@/lib/types';
-import { ShieldCheck, Lock, FileText, ArrowRight, AlertCircle } from 'lucide-react';
+import { ShieldCheck, Lock, FileText, ArrowRight, AlertCircle, Clock } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface CheckoutClientProps {
@@ -20,6 +21,29 @@ export default function CheckoutClient({ order }: CheckoutClientProps) {
   const router = useRouter();
   const [processing, setProcessing] = useState(false);
   const [scriptLoaded, setScriptLoaded] = useState(false);
+
+  const createdAtMs = new Date(order.created_at).getTime();
+  const FIFTEEN_MIN_MS = 15 * 60 * 1000;
+  const isInitiallyExpired = order.status === 'cancelled' || order.status === 'failed' || (Date.now() - createdAtMs > FIFTEEN_MIN_MS);
+  const [isExpired, setIsExpired] = useState(isInitiallyExpired);
+  const [secondsRemaining, setSecondsRemaining] = useState(() => {
+    const elapsed = Date.now() - createdAtMs;
+    return Math.max(0, Math.floor((FIFTEEN_MIN_MS - elapsed) / 1000));
+  });
+
+  useEffect(() => {
+    if (isExpired || order.status === 'paid') return;
+    const interval = setInterval(() => {
+      const elapsed = Date.now() - createdAtMs;
+      const left = Math.max(0, Math.floor((FIFTEEN_MIN_MS - elapsed) / 1000));
+      setSecondsRemaining(left);
+      if (left <= 0) {
+        setIsExpired(true);
+        clearInterval(interval);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [createdAtMs, isExpired, order.status]);
 
   useEffect(() => {
     // Dynamically load Razorpay SDK
@@ -190,29 +214,64 @@ export default function CheckoutClient({ order }: CheckoutClientProps) {
         </div>
       </div>
 
-      {/* Payment Button */}
-      <div className="pt-2">
-        <button
-          onClick={handlePayNow}
-          disabled={processing}
-          className="w-full py-4 px-6 rounded-2xl bg-slate-950 hover:bg-[#FFE500] hover:text-slate-950 text-white font-black text-sm transition-all shadow-md flex items-center justify-center gap-2 group disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-amber-400"
-        >
-          {processing ? (
-            <span>Verifying Payment...</span>
-          ) : (
-            <>
-              <Lock className="w-4 h-4" />
-              <span>Pay Securely with Razorpay (₹{finalRupees})</span>
-              <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-            </>
-          )}
-        </button>
+      {/* Expiry Warning or Expired Box */}
+      {isExpired ? (
+        <div className="p-6 bg-red-50 border border-red-200 rounded-3xl text-center space-y-3">
+          <div className="w-12 h-12 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto">
+            <AlertCircle className="w-6 h-6" />
+          </div>
+          <h3 className="text-sm font-bold text-red-950">Payment Session Expired</h3>
+          <p className="text-xs text-red-700 leading-relaxed max-w-md mx-auto">
+            This checkout session was pending for more than 15 minutes and has been automatically cancelled. The payment link has been removed. Please browse the catalog to place a fresh order.
+          </p>
+          <div className="pt-2">
+            <Link
+              href="/notes"
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-full bg-slate-950 text-white hover:bg-[#FFE500] hover:text-slate-950 text-xs font-bold transition-all shadow-md"
+            >
+              <span>Browse Notes Catalog</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {/* 15-Minute Countdown Indicator */}
+          <div className="p-3 bg-amber-50 rounded-2xl border border-amber-200 text-amber-900 text-xs flex items-center justify-between">
+            <span className="flex items-center gap-1.5 font-medium">
+              <Clock className="w-3.5 h-3.5 text-amber-600 animate-pulse" />
+              <span>Checkout session expires in:</span>
+            </span>
+            <span className="font-mono font-bold text-amber-950">
+              {Math.floor(secondsRemaining / 60)}m {secondsRemaining % 60}s
+            </span>
+          </div>
 
-        <p className="text-[11px] text-slate-400 text-center mt-3 flex items-center justify-center gap-1.5">
-          <ShieldCheck className="w-4 h-4 text-emerald-500" />
-          <span>Encrypted 256-bit SSL transaction via Razorpay</span>
-        </p>
-      </div>
+          {/* Payment Button */}
+          <div className="pt-2">
+            <button
+              onClick={handlePayNow}
+              disabled={processing}
+              className="w-full py-4 px-6 rounded-2xl bg-slate-950 hover:bg-[#FFE500] hover:text-slate-950 text-white font-black text-sm transition-all shadow-md flex items-center justify-center gap-2 group disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-amber-400"
+            >
+              {processing ? (
+                <span>Verifying Payment...</span>
+              ) : (
+                <>
+                  <Lock className="w-4 h-4" />
+                  <span>Pay Securely with Razorpay (₹{finalRupees})</span>
+                  <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                </>
+              )}
+            </button>
+
+            <p className="text-[11px] text-slate-400 text-center mt-3 flex items-center justify-center gap-1.5">
+              <ShieldCheck className="w-4 h-4 text-emerald-500" />
+              <span>Encrypted 256-bit SSL transaction via Razorpay</span>
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

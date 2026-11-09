@@ -72,6 +72,15 @@ export async function POST(req: NextRequest) {
       display_name: userName || null,
     });
 
+    // 5b. Strict Single Purchase Enforcement: Block duplicate orders if note is already owned
+    const alreadyOwned = await db.hasEntitlement(dbUser.id, product.id, emailToUse);
+    if (alreadyOwned) {
+      return NextResponse.json(
+        { error: 'You have already purchased this note. Only a single purchase is allowed. You can download it directly from your account.' },
+        { status: 400 }
+      );
+    }
+
     const orderNumber = `NBZ-${Date.now().toString(36).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`;
     const internalOrderId = `ord_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 

@@ -35,38 +35,48 @@ export default function MyPurchasesPage() {
     loadOrders();
   }, [firebaseUser]);
 
-  const getStatusBadge = (status: Order['status']) => {
-    switch (status) {
-      case 'paid':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800">
-            <CheckCircle2 className="w-3 h-3" />
-            Paid & Verified
-          </span>
-        );
-      case 'pending':
-      case 'created':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800">
-            <Clock className="w-3 h-3" />
-            Pending
-          </span>
-        );
-      case 'failed':
-      case 'cancelled':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-red-100 text-red-800">
-            <XCircle className="w-3 h-3" />
-            Failed
-          </span>
-        );
-      default:
-        return (
-          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-700">
-            {status}
-          </span>
-        );
+  const isOrderExpired = (o: Order) => {
+    if (o.status === 'cancelled' || o.status === 'failed') return true;
+    if (o.status === 'pending' || o.status === 'created') {
+      const ageMs = Date.now() - new Date(o.created_at).getTime();
+      return ageMs > 15 * 60 * 1000;
     }
+    return false;
+  };
+
+  const getStatusBadge = (o: Order) => {
+    if (o.status === 'paid') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800">
+          <CheckCircle2 className="w-3 h-3" />
+          Paid & Verified
+        </span>
+      );
+    }
+
+    if (isOrderExpired(o)) {
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-red-100 text-red-800">
+          <XCircle className="w-3 h-3" />
+          {o.status === 'failed' ? 'Failed' : 'Cancelled (Expired)'}
+        </span>
+      );
+    }
+
+    if (o.status === 'pending' || o.status === 'created') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800">
+          <Clock className="w-3 h-3" />
+          Pending
+        </span>
+      );
+    }
+
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-700">
+        {o.status}
+      </span>
+    );
   };
 
   return (
@@ -111,7 +121,7 @@ export default function MyPurchasesPage() {
                     <td className="py-4 px-5 font-black text-slate-950">
                       ₹{(o.final_amount_in_paise / 100).toFixed(0)}
                     </td>
-                    <td className="py-4 px-5">{getStatusBadge(o.status)}</td>
+                    <td className="py-4 px-5">{getStatusBadge(o)}</td>
                     <td className="py-4 px-5 text-right">
                       {o.status === 'paid' ? (
                         <Link
@@ -120,6 +130,10 @@ export default function MyPurchasesPage() {
                         >
                           Downloads →
                         </Link>
+                      ) : isOrderExpired(o) ? (
+                        <span className="text-xs font-medium text-slate-400">
+                          Expired
+                        </span>
                       ) : (
                         <Link
                           href={`/checkout/${o.id}`}

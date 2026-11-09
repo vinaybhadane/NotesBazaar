@@ -53,18 +53,27 @@ export async function GET(req: NextRequest, { params }: Params) {
     });
 
     // 4. Retrieve private file buffer from Azure Blob Storage or local private storage
-    const productFile = await db.getProductFileByProductId(product.id);
+    const queryFileId = req.nextUrl.searchParams.get('fileId');
+    const allFiles = await db.getProductFilesByProductId(product.id);
+    let targetFile = queryFileId ? allFiles.find((f) => f.id === queryFileId) : null;
+    if (!targetFile && allFiles.length > 0) {
+      targetFile = allFiles[0];
+    }
+    if (!targetFile) {
+      targetFile = await db.getProductFileByProductId(product.id);
+    }
+
     let fileBuffer: Buffer | null = null;
 
-    if (productFile?.blob_name) {
+    if (targetFile?.blob_name) {
       try {
-        fileBuffer = await storage.getPrivateNoteBuffer(productFile.blob_name, productFile.blob_container);
+        fileBuffer = await storage.getPrivateNoteBuffer(targetFile.blob_name, targetFile.blob_container);
       } catch (err: any) {
         console.warn('[Download] Failed to retrieve blob from product_files record:', err.message);
       }
     }
 
-    const downloadFilename = `${product.slug}_SPPU_2024_NotesBazaar.pdf`;
+    const downloadFilename = targetFile?.original_filename || `${product.slug}_SPPU_2024_NotesBazaar.pdf`;
 
     if (!fileBuffer) {
       try {
