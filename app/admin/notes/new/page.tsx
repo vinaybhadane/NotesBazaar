@@ -3,6 +3,8 @@ import type { Metadata } from 'next';
 import { db } from '@/lib/db';
 import NoteEditorForm from '../NoteEditorForm';
 
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: 'Add New Note | Admin NotesBazaar',
   robots: {
@@ -15,6 +17,7 @@ export default async function NewNotePage() {
   const branches = await db.getBranches();
   const academicYears = await db.getAcademicYears();
   const patterns = await db.getPatterns();
+  const subjects = await db.getSubjects();
 
   return (
     <div className="space-y-6">
@@ -29,8 +32,8 @@ export default async function NewNotePage() {
         branches={branches}
         academicYears={academicYears}
         patterns={patterns}
+        subjects={subjects}
       />
     </div>
   );
 }
-

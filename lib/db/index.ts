@@ -7,6 +7,7 @@ import {
   Pattern,
   Subject,
   Product,
+  ProductFile,
   Order,
   OrderItem,
   Payment,
@@ -160,6 +161,11 @@ function readLocalData(): LocalDbSchema {
 let memoryCache: LocalDbSchema | null = null;
 let lastCacheSync = 0;
 const CACHE_TTL_MS = 15000; // 15 seconds TTL for high performance & fresh data
+
+export function clearDbCache() {
+  memoryCache = null;
+  lastCacheSync = 0;
+}
 
 async function getStore(): Promise<LocalDbSchema> {
   const pool = await getSqlPool();
@@ -415,6 +421,57 @@ export const db = {
     return data.subjects.find((s) => s.slug === slug && s.is_active) || null;
   },
 
+  async createSubject(subject: {
+    id?: string;
+    name: string;
+    slug?: string;
+    code?: string;
+    branch_id: string;
+    year_id: string;
+    pattern_id?: string;
+    description?: string;
+  }): Promise<Subject> {
+    const pool = await getSqlPool();
+    const id = subject.id || `sub_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
+    const slug = subject.slug || subject.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '') || 'general-subject';
+    const pattern_id = subject.pattern_id || 'pat_2024';
+
+    if (pool) {
+      await pool.request()
+        .input('id', sql.NVarChar(50), id)
+        .input('name', sql.NVarChar(200), subject.name)
+        .input('slug', sql.NVarChar(150), slug)
+        .input('code', sql.NVarChar(50), subject.code || null)
+        .input('branch_id', sql.NVarChar(50), subject.branch_id)
+        .input('year_id', sql.NVarChar(50), subject.year_id)
+        .input('pattern_id', sql.NVarChar(50), pattern_id)
+        .input('description', sql.NVarChar(sql.MAX), subject.description || null)
+        .query(`
+          IF NOT EXISTS (SELECT 1 FROM subjects WHERE id = @id)
+          BEGIN
+            INSERT INTO subjects (id, name, slug, code, branch_id, year_id, pattern_id, description, is_active)
+            VALUES (@id, @name, @slug, @code, @branch_id, @year_id, @pattern_id, @description, 1)
+          END
+        `);
+    }
+
+    clearDbCache();
+
+    const newSub: Subject = {
+      id,
+      name: subject.name,
+      slug,
+      code: subject.code || null,
+      branch_id: subject.branch_id,
+      year_id: subject.year_id,
+      pattern_id,
+      description: subject.description,
+      is_active: true,
+      created_at: new Date().toISOString(),
+    };
+    return newSub;
+  },
+
   // ---------------------------------------------------------------------------
   // Products
   // ---------------------------------------------------------------------------
@@ -578,19 +635,114 @@ export const db = {
     };
   },
 
-  async createProduct(product: Product): Promise<Product> {
+  async createProduct(product: Product & { subject_name?: string }): Promise<Product> {
     const pool = await getSqlPool();
     if (pool) {
       try {
+        // 1. Ensure branch_id is valid
+        let branchId = product.branch_id;
+        const branchCheck = await pool.request()
+          .input('b_id', sql.NVarChar(50), branchId)
+          .query('SELECT TOP 1 id FROM branches WHERE id = @b_id');
+        if (!branchCheck.recordset.length) {
+          const defBranch = await pool.request().query('SELECT TOP 1 id FROM branches WHERE is_active = 1 ORDER BY sort_order');
+          branchId = defBranch.recordset[0]?.id || 'br_comp';
+          product.branch_id = branchId;
+        }
+
+        // 2. Ensure year_id is valid
+        let yearId = product.year_id;
+        const yearCheck = await pool.request()
+          .input('y_id', sql.NVarChar(50), yearId)
+          .query('SELECT TOP 1 id FROM academic_years WHERE id = @y_id');
+        if (!yearCheck.recordset.length) {
+          const defYear = await pool.request().query('SELECT TOP 1 id FROM academic_years WHERE is_active = 1 ORDER BY sort_order');
+          yearId = defYear.recordset[0]?.id || 'yr_se';
+          product.year_id = yearId;
+        }
+
+        // 3. Ensure pattern_id is valid
+        let patternId = product.pattern_id || 'pat_2024';
+        const patCheck = await pool.request()
+          .input('p_id', sql.NVarChar(50), patternId)
+          .query('SELECT TOP 1 id FROM patterns WHERE id = @p_id');
+        if (!patCheck.recordset.length) {
+          const defPat = await pool.request().query('SELECT TOP 1 id FROM patterns WHERE is_active = 1');
+          patternId = defPat.recordset[0]?.id || 'pat_2024';
+          product.pattern_id = patternId;
+        }
+
+        // 4. Resolve Subject in Azure SQL
+        const subName = (product.subject_name || product.title || 'General Engineering Subject').trim();
+        const subSlug = subName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '') || 'general-subject';
+        let subjectId = product.subject_id?.trim();
+
+        if (subjectId) {
+          const subCheck = await pool.request()
+            .input('s_id', sql.NVarChar(50), subjectId)
+            .query('SELECT TOP 1 id FROM subjects WHERE id = @s_id');
+          if (!subCheck.recordset.length) {
+            await pool.request()
+              .input('s_id', sql.NVarChar(50), subjectId)
+              .input('s_name', sql.NVarChar(200), subName)
+              .input('s_slug', sql.NVarChar(150), subSlug)
+              .input('branch_id', sql.NVarChar(50), branchId)
+              .input('year_id', sql.NVarChar(50), yearId)
+              .input('pattern_id', sql.NVarChar(50), patternId)
+              .query(`
+                INSERT INTO subjects (id, name, slug, branch_id, year_id, pattern_id, is_active)
+                VALUES (@s_id, @s_name, @s_slug, @branch_id, @year_id, @pattern_id, 1)
+              `);
+          }
+        } else {
+          const existingSub = await pool.request()
+            .input('s_name', sql.NVarChar(200), subName)
+            .input('s_slug', sql.NVarChar(150), subSlug)
+            .input('branch_id', sql.NVarChar(50), branchId)
+            .input('year_id', sql.NVarChar(50), yearId)
+            .query(`
+              SELECT TOP 1 id FROM subjects 
+              WHERE (slug = @s_slug OR name = @s_name) AND branch_id = @branch_id AND year_id = @year_id
+            `);
+          if (existingSub.recordset.length > 0) {
+            subjectId = existingSub.recordset[0].id;
+          } else {
+            subjectId = `sub_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
+            await pool.request()
+              .input('s_id', sql.NVarChar(50), subjectId)
+              .input('s_name', sql.NVarChar(200), subName)
+              .input('s_slug', sql.NVarChar(150), subSlug)
+              .input('branch_id', sql.NVarChar(50), branchId)
+              .input('year_id', sql.NVarChar(50), yearId)
+              .input('pattern_id', sql.NVarChar(50), patternId)
+              .query(`
+                INSERT INTO subjects (id, name, slug, branch_id, year_id, pattern_id, is_active)
+                VALUES (@s_id, @s_name, @s_slug, @branch_id, @year_id, @pattern_id, 1)
+              `);
+          }
+          product.subject_id = subjectId;
+        }
+
+        // 5. Ensure Product Slug Uniqueness
+        let finalSlug = product.slug;
+        const slugCheck = await pool.request()
+          .input('slug', sql.NVarChar(200), finalSlug)
+          .query('SELECT TOP 1 id FROM products WHERE slug = @slug');
+        if (slugCheck.recordset.length > 0) {
+          finalSlug = `${finalSlug}-${Math.random().toString(36).substring(2, 6)}`;
+          product.slug = finalSlug;
+        }
+
+        // 6. Insert Product into Azure SQL
         await pool.request()
           .input('id', sql.NVarChar(50), product.id)
           .input('title', sql.NVarChar(255), product.title)
           .input('slug', sql.NVarChar(200), product.slug)
-          .input('branch_id', sql.NVarChar(50), product.branch_id)
-          .input('year_id', sql.NVarChar(50), product.year_id)
+          .input('branch_id', sql.NVarChar(50), branchId)
+          .input('year_id', sql.NVarChar(50), yearId)
           .input('semester_id', sql.NVarChar(50), product.semester_id || null)
-          .input('subject_id', sql.NVarChar(50), product.subject_id)
-          .input('pattern_id', sql.NVarChar(50), product.pattern_id)
+          .input('subject_id', sql.NVarChar(50), subjectId)
+          .input('pattern_id', sql.NVarChar(50), patternId)
           .input('short_description', sql.NVarChar(500), product.short_description || '')
           .input('full_description', sql.NVarChar(sql.MAX), product.full_description || '')
           .input('topics_covered', sql.NVarChar(sql.MAX), JSON.stringify(product.topics_covered || []))
@@ -615,20 +767,52 @@ export const db = {
               @file_format, @page_count, @file_size_bytes
             )
           `);
-      } catch (dbErr) {
-        console.warn('[Database] Failed to insert product in Azure SQL:', dbErr);
+
+        clearDbCache();
+      } catch (dbErr: any) {
+        console.error('[Database] Azure SQL createProduct error:', dbErr);
+        throw new Error(`Database error saving product: ${dbErr.message}`);
       }
+    } else {
+      const data = await getStore();
+      data.products.push(product);
+      writeLocalData(data);
+      clearDbCache();
     }
-    const data = await getStore();
-    data.products.push(product);
-    writeLocalData(data);
     return product;
   },
 
-  async updateProduct(id: string, updates: Partial<Product>): Promise<Product | null> {
+  async updateProduct(id: string, updates: Partial<Product> & { subject_name?: string }): Promise<Product | null> {
     const pool = await getSqlPool();
     if (pool) {
       try {
+        if (updates.subject_name) {
+          const subName = updates.subject_name.trim();
+          const subSlug = subName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
+          const existing = await pool.request()
+            .input('s_name', sql.NVarChar(200), subName)
+            .query('SELECT TOP 1 id FROM subjects WHERE name = @s_name');
+          if (existing.recordset.length > 0) {
+            updates.subject_id = existing.recordset[0].id;
+          } else {
+            const newSubId = `sub_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
+            const pRes = await pool.request().input('id', sql.NVarChar(50), id).query('SELECT branch_id, year_id, pattern_id FROM products WHERE id = @id');
+            const pRow = pRes.recordset[0] || {};
+            await pool.request()
+              .input('s_id', sql.NVarChar(50), newSubId)
+              .input('s_name', sql.NVarChar(200), subName)
+              .input('s_slug', sql.NVarChar(150), subSlug)
+              .input('b_id', sql.NVarChar(50), updates.branch_id || pRow.branch_id || 'br_comp')
+              .input('y_id', sql.NVarChar(50), updates.year_id || pRow.year_id || 'yr_se')
+              .input('pat_id', sql.NVarChar(50), updates.pattern_id || pRow.pattern_id || 'pat_2024')
+              .query(`
+                INSERT INTO subjects (id, name, slug, branch_id, year_id, pattern_id, is_active)
+                VALUES (@s_id, @s_name, @s_slug, @b_id, @y_id, @pat_id, 1)
+              `);
+            updates.subject_id = newSubId;
+          }
+        }
+
         const req = pool.request().input('id', sql.NVarChar(50), id);
         const sets: string[] = [];
         if (updates.title !== undefined) {
@@ -639,6 +823,22 @@ export const db = {
           req.input('slug', sql.NVarChar(200), updates.slug);
           sets.push('slug = @slug');
         }
+        if (updates.branch_id !== undefined) {
+          req.input('branch_id', sql.NVarChar(50), updates.branch_id);
+          sets.push('branch_id = @branch_id');
+        }
+        if (updates.year_id !== undefined) {
+          req.input('year_id', sql.NVarChar(50), updates.year_id);
+          sets.push('year_id = @year_id');
+        }
+        if (updates.subject_id !== undefined) {
+          req.input('subject_id', sql.NVarChar(50), updates.subject_id);
+          sets.push('subject_id = @subject_id');
+        }
+        if (updates.pattern_id !== undefined) {
+          req.input('pattern_id', sql.NVarChar(50), updates.pattern_id);
+          sets.push('pattern_id = @pattern_id');
+        }
         if (updates.short_description !== undefined) {
           req.input('short_description', sql.NVarChar(500), updates.short_description);
           sets.push('short_description = @short_description');
@@ -646,6 +846,10 @@ export const db = {
         if (updates.full_description !== undefined) {
           req.input('full_description', sql.NVarChar(sql.MAX), updates.full_description);
           sets.push('full_description = @full_description');
+        }
+        if (updates.topics_covered !== undefined) {
+          req.input('topics_covered', sql.NVarChar(sql.MAX), JSON.stringify(updates.topics_covered));
+          sets.push('topics_covered = @topics_covered');
         }
         if (updates.price_in_paise !== undefined) {
           req.input('price_in_paise', sql.Int, updates.price_in_paise);
@@ -671,12 +875,18 @@ export const db = {
           req.input('page_count', sql.Int, updates.page_count);
           sets.push('page_count = @page_count');
         }
+        if (updates.file_size_bytes !== undefined) {
+          req.input('file_size_bytes', sql.BigInt, updates.file_size_bytes);
+          sets.push('file_size_bytes = @file_size_bytes');
+        }
         if (sets.length > 0) {
           sets.push('updated_at = SYSUTCDATETIME()');
           await req.query(`UPDATE products SET ${sets.join(', ')} WHERE id = @id`);
         }
-      } catch (dbErr) {
-        console.warn('[Database] Failed to update product in Azure SQL:', dbErr);
+        clearDbCache();
+      } catch (dbErr: any) {
+        console.error('[Database] Azure SQL updateProduct error:', dbErr);
+        throw new Error(`Database error updating product: ${dbErr.message}`);
       }
     }
 
@@ -690,6 +900,7 @@ export const db = {
       updated_at: new Date().toISOString(),
     };
     writeLocalData(data);
+    clearDbCache();
     return data.products[idx];
   },
 
@@ -700,20 +911,101 @@ export const db = {
         await pool.request()
           .input('id', sql.NVarChar(50), id)
           .query(`
+            DELETE FROM download_audit_logs WHERE product_id = @id;
             DELETE FROM download_entitlements WHERE product_id = @id;
             DELETE FROM order_items WHERE product_id = @id;
             DELETE FROM product_files WHERE product_id = @id;
             DELETE FROM products WHERE id = @id;
           `);
-      } catch (dbErr) {
-        console.warn('[Database] Failed to delete product in Azure SQL:', dbErr);
+        clearDbCache();
+      } catch (dbErr: any) {
+        console.error('[Database] Azure SQL deleteProduct error:', dbErr);
+        throw new Error(`Database error deleting product: ${dbErr.message}`);
       }
     }
     const data = await getStore();
     const initialLen = data.products.length;
     data.products = data.products.filter((p) => p.id !== id);
     writeLocalData(data);
+    clearDbCache();
     return data.products.length < initialLen;
+  },
+
+  async recordProductFile(params: {
+    product_id: string;
+    blob_container: string;
+    blob_name: string;
+    original_filename: string;
+    file_size_bytes: number;
+    mime_type?: string;
+  }): Promise<ProductFile> {
+    const pool = await getSqlPool();
+    const id = `pf_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const mime = params.mime_type || 'application/pdf';
+
+    if (pool) {
+      await pool.request()
+        .input('id', sql.NVarChar(50), id)
+        .input('product_id', sql.NVarChar(50), params.product_id)
+        .input('blob_container', sql.NVarChar(100), params.blob_container)
+        .input('blob_name', sql.NVarChar(500), params.blob_name)
+        .input('original_filename', sql.NVarChar(255), params.original_filename)
+        .input('mime_type', sql.NVarChar(100), mime)
+        .input('file_size_bytes', sql.BigInt, params.file_size_bytes)
+        .query(`
+          INSERT INTO product_files (
+            id, product_id, storage_provider, blob_container, blob_name,
+            original_filename, mime_type, file_size_bytes, version, upload_status
+          ) VALUES (
+            @id, @product_id, 'azure_blob', @blob_container, @blob_name,
+            @original_filename, @mime_type, @file_size_bytes, 1, 'completed'
+          );
+          UPDATE products SET file_size_bytes = @file_size_bytes WHERE id = @product_id;
+        `);
+    }
+
+    clearDbCache();
+
+    return {
+      id,
+      product_id: params.product_id,
+      storage_provider: 'azure_blob',
+      blob_container: params.blob_container,
+      blob_name: params.blob_name,
+      original_filename: params.original_filename,
+      mime_type: mime,
+      file_size_bytes: params.file_size_bytes,
+      version: 1,
+      upload_status: 'completed',
+      created_at: new Date().toISOString(),
+    };
+  },
+
+  async getProductFileByProductId(productId: string): Promise<ProductFile | null> {
+    const pool = await getSqlPool();
+    if (pool) {
+      const res = await pool.request()
+        .input('product_id', sql.NVarChar(50), productId)
+        .query('SELECT TOP 1 * FROM product_files WHERE product_id = @product_id ORDER BY created_at DESC');
+      if (res.recordset.length > 0) {
+        const r = res.recordset[0];
+        return {
+          id: r.id,
+          product_id: r.product_id,
+          storage_provider: r.storage_provider,
+          blob_container: r.blob_container,
+          blob_name: r.blob_name,
+          original_filename: r.original_filename,
+          mime_type: r.mime_type,
+          file_size_bytes: Number(r.file_size_bytes || 0),
+          sha256_checksum: r.sha256_checksum,
+          version: r.version,
+          upload_status: r.upload_status,
+          created_at: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+        };
+      }
+    }
+    return null;
   },
 
   // ---------------------------------------------------------------------------
@@ -1387,4 +1679,6 @@ export const db = {
       totalUsers: data.users.length,
     };
   },
+
+  clearDbCache,
 };

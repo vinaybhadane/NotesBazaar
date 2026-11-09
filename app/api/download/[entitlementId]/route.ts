@@ -53,15 +53,25 @@ export async function GET(req: NextRequest, { params }: Params) {
     });
 
     // 4. Retrieve private file buffer from Azure Blob Storage or local private storage
-    // If a specific blob filename is set on the product, use it; otherwise generate a clean PDF
-    const filename = `${product.slug}_SPPU_2024_NotesBazaar.pdf`;
-    let fileBuffer: Buffer;
+    const productFile = await db.getProductFileByProductId(product.id);
+    let fileBuffer: Buffer | null = null;
 
-    try {
-      fileBuffer = await storage.getPrivateNoteBuffer(filename);
-    } catch {
-      // If the file was not uploaded to storage yet, generate a valid signed PDF buffer
-      const pdfContent = `%PDF-1.4
+    if (productFile?.blob_name) {
+      try {
+        fileBuffer = await storage.getPrivateNoteBuffer(productFile.blob_name, productFile.blob_container);
+      } catch (err: any) {
+        console.warn('[Download] Failed to retrieve blob from product_files record:', err.message);
+      }
+    }
+
+    const downloadFilename = `${product.slug}_SPPU_2024_NotesBazaar.pdf`;
+
+    if (!fileBuffer) {
+      try {
+        fileBuffer = await storage.getPrivateNoteBuffer(downloadFilename);
+      } catch {
+        // If the file was not uploaded to storage yet, generate a valid signed PDF buffer
+        const pdfContent = `%PDF-1.4
 1 0 obj << /Title (${product.title}) /Author (NotesBazaar by AbhyasMitra) /Pattern (SPPU 2024 Pattern) >> endobj
 2 0 obj << /Type /Catalog /Pages 3 0 R >> endobj
 3 0 obj << /Type /Pages /Kids [4 0 R] /Count 1 >> endobj
@@ -93,14 +103,15 @@ trailer << /Size 6 /Root 2 0 R >>
 startxref
 555
 %%EOF`;
-      fileBuffer = Buffer.from(pdfContent, 'utf-8');
+        fileBuffer = Buffer.from(pdfContent, 'utf-8');
+      }
     }
 
     return new Response(new Uint8Array(fileBuffer), {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Disposition': `attachment; filename="${downloadFilename}"`,
         'Cache-Control': 'private, no-cache, no-store, must-revalidate',
         'Pragma': 'no-cache',
         'Expires': '0',

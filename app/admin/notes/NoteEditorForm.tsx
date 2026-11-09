@@ -2,8 +2,8 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Product, Branch, AcademicYear, Pattern } from '@/lib/types';
-import { Save, ArrowLeft, Upload, FileText, ToggleLeft, ToggleRight, Sparkles } from 'lucide-react';
+import { Product, Branch, AcademicYear, Pattern, Subject } from '@/lib/types';
+import { Save, Upload, FileText, ToggleLeft, ToggleRight, Loader2, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface NoteEditorFormProps {
@@ -11,6 +11,7 @@ interface NoteEditorFormProps {
   branches: Branch[];
   academicYears: AcademicYear[];
   patterns: Pattern[];
+  subjects?: Subject[];
 }
 
 export default function NoteEditorForm({
@@ -18,14 +19,16 @@ export default function NoteEditorForm({
   branches,
   academicYears,
   patterns,
+  subjects = [],
 }: NoteEditorFormProps) {
   const router = useRouter();
   const isEditing = Boolean(initialProduct);
 
   const [title, setTitle] = useState(initialProduct?.title || '');
   const [slug, setSlug] = useState(initialProduct?.slug || '');
-  const [branchId, setBranchId] = useState(initialProduct?.branch_id || branches[0]?.id || '');
-  const [yearId, setYearId] = useState(initialProduct?.year_id || academicYears[0]?.id || '');
+  const [subjectName, setSubjectName] = useState(initialProduct?.subject_name || '');
+  const [branchId, setBranchId] = useState(initialProduct?.branch_id || branches[0]?.id || 'br_comp');
+  const [yearId, setYearId] = useState(initialProduct?.year_id || academicYears[0]?.id || 'yr_se');
   const [patternId, setPatternId] = useState(initialProduct?.pattern_id || patterns[0]?.id || 'pat_2024');
   const [priceRupees, setPriceRupees] = useState(
     initialProduct ? (initialProduct.price_in_paise / 100).toString() : '79'
@@ -41,6 +44,7 @@ export default function NoteEditorForm({
   const [isComingSoon, setIsComingSoon] = useState<boolean>(
     initialProduct?.is_coming_soon || false
   );
+  const [pageCount, setPageCount] = useState(initialProduct?.page_count?.toString() || '65');
   const [shortDesc, setShortDesc] = useState(initialProduct?.short_description || '');
   const [fullDesc, setFullDesc] = useState(initialProduct?.full_description || '');
   const [topicsText, setTopicsText] = useState(
@@ -48,8 +52,9 @@ export default function NoteEditorForm({
   );
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
+  const [uploadStatusMsg, setUploadStatusMsg] = useState('');
 
-  // Auto-generate slug from title if new
+  // Auto-generate slug and prefill subject from title if new
   const handleTitleChange = (val: string) => {
     setTitle(val);
     if (!isEditing) {
@@ -58,45 +63,68 @@ export default function NoteEditorForm({
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/(^-|-$)+/g, '');
       setSlug(generated);
+      if (!subjectName) {
+        // e.g. "Data Structures and Algorithms Notes" -> "Data Structures and Algorithms"
+        const cleanSub = val.replace(/\s+(notes|complete notes|handbook|guide|unit\s*\d.*)$/i, '').trim();
+        setSubjectName(cleanSub);
+      }
     }
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title || !slug || !priceRupees) {
+    if (!title.trim() || !slug.trim() || !priceRupees.trim()) {
       toast.error('Title, slug, and price are required.');
       return;
     }
 
+    const priceNum = parseFloat(priceRupees);
+    if (isNaN(priceNum) || priceNum < 0) {
+      toast.error('Please enter a valid price in INR.');
+      return;
+    }
+
     setSaving(true);
+    setUploadStatusMsg(selectedFile ? 'Uploading PDF file to secure storage & saving note...' : 'Saving note to catalog...');
+
     try {
       const topicsArray = topicsText
         .split('\n')
         .map((t) => t.trim())
         .filter(Boolean);
 
-      const pricePaise = Math.round(parseFloat(priceRupees) * 100);
+      const pricePaise = Math.round(priceNum * 100);
       const comparePricePaise = comparePriceRupees
         ? Math.round(parseFloat(comparePriceRupees) * 100)
         : null;
 
-      const payload = {
-        title,
-        slug,
-        branch_id: branchId,
-        year_id: yearId,
-        subject_id: 'sub_' + slug.substring(0, 10),
-        pattern_id: patternId,
-        short_description: shortDesc,
-        full_description: fullDesc,
-        topics_covered: topicsArray,
-        price_in_paise: pricePaise,
-        compare_at_price_in_paise: comparePricePaise,
-        publication_status: publicationStatus,
-        is_coming_soon: isComingSoon,
-        is_available: !isComingSoon,
-        file_format: 'PDF',
-      };
+      const formData = new FormData();
+      formData.append('title', title.trim());
+      formData.append('slug', slug.trim());
+      formData.append('branch_id', branchId);
+      formData.append('year_id', yearId);
+      formData.append('pattern_id', patternId);
+      formData.append('subject_name', subjectName.trim() || title.trim());
+      formData.append('price_in_paise', pricePaise.toString());
+      if (comparePricePaise !== null) {
+        formData.append('compare_at_price_in_paise', comparePricePaise.toString());
+      }
+      formData.append('publication_status', publicationStatus);
+      formData.append('is_coming_soon', isComingSoon ? 'true' : 'false');
+      formData.append('short_description', shortDesc.trim());
+      formData.append('full_description', fullDesc.trim());
+      formData.append('topics_covered', JSON.stringify(topicsArray));
+      formData.append('page_count', (parseInt(pageCount, 10) || 65).toString());
+
+      if (selectedFile) {
+        formData.append('file', selectedFile);
+      }
 
       const url = isEditing
         ? `/api/admin/notes/${initialProduct?.id}`
@@ -105,8 +133,7 @@ export default function NoteEditorForm({
 
       const res = await fetch(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: formData,
       });
 
       const data = await res.json();
@@ -119,8 +146,9 @@ export default function NoteEditorForm({
       toast.success(isEditing ? 'Note updated successfully!' : 'Note published to catalog!');
       router.push('/admin/notes');
       router.refresh();
-    } catch {
-      toast.error('Error saving note.');
+    } catch (err: any) {
+      console.error('[NoteEditorForm Save Error]:', err);
+      toast.error(err.message || 'Error saving note.');
     } finally {
       setSaving(false);
     }
@@ -161,6 +189,31 @@ export default function NoteEditorForm({
               onChange={(e) => setSlug(e.target.value)}
               className="w-full px-4 py-2 text-xs bg-slate-50 border border-slate-200 rounded-2xl text-slate-700 font-mono focus:bg-white focus:outline-none focus:border-amber-400"
             />
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-900 mb-1">
+              Subject Name *
+            </label>
+            <input
+              type="text"
+              required
+              list="sppu-subjects-list"
+              placeholder="e.g. Data Structures and Algorithms, Object Oriented Programming, Mathematics III"
+              value={subjectName}
+              onChange={(e) => setSubjectName(e.target.value)}
+              className="w-full px-4 py-2 text-xs border border-slate-200 rounded-2xl text-slate-800 focus:outline-none focus:border-amber-400 font-medium"
+            />
+            {subjects && subjects.length > 0 && (
+              <datalist id="sppu-subjects-list">
+                {subjects.map((s) => (
+                  <option key={s.id} value={s.name} />
+                ))}
+              </datalist>
+            )}
+            <p className="text-[10px] text-slate-400 mt-1">
+              Type or pick a subject. Will be automatically registered in the SPPU curriculum hierarchy.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -217,7 +270,7 @@ export default function NoteEditorForm({
             Pricing & Availability Status
           </h2>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-bold text-slate-900 mb-1">
                 Selling Price (INR) *
@@ -255,6 +308,20 @@ export default function NoteEditorForm({
                   className="w-full pl-8 pr-4 py-2 text-xs border border-slate-200 rounded-2xl text-slate-600 focus:outline-none focus:border-amber-400"
                 />
               </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-900 mb-1">
+                Page Count
+              </label>
+              <input
+                type="number"
+                min="1"
+                placeholder="65"
+                value={pageCount}
+                onChange={(e) => setPageCount(e.target.value)}
+                className="w-full px-4 py-2 text-xs border border-slate-200 rounded-2xl text-slate-800 focus:outline-none focus:border-amber-400"
+              />
             </div>
           </div>
 
@@ -367,44 +434,89 @@ export default function NoteEditorForm({
             Document File (Private Storage)
           </h2>
 
-          <div className="p-6 border-2 border-dashed border-slate-200 rounded-3xl text-center space-y-2 hover:border-amber-400 transition-colors">
-            <Upload className="w-8 h-8 text-slate-400 mx-auto" />
-            <p className="text-xs font-bold text-slate-900">
-              {selectedFile ? selectedFile.name : 'Choose note PDF to upload'}
-            </p>
-            <p className="text-[11px] text-slate-400">
-              Strictly PDF format only. File signature will be verified server-side.
-            </p>
+          {isEditing && (
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-between text-xs text-slate-600">
+              <span className="flex items-center gap-2">
+                <FileText className="w-4 h-4 text-emerald-600" />
+                <span>Existing note PDF is securely stored. Upload a new file below only to replace it.</span>
+              </span>
+              {initialProduct?.file_size_bytes && (
+                <span className="font-mono text-[11px] text-slate-400 font-medium">
+                  {formatFileSize(initialProduct.file_size_bytes)}
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className="p-6 border-2 border-dashed border-slate-200 rounded-3xl text-center space-y-2 hover:border-amber-400 transition-colors bg-slate-50/50">
+            {selectedFile ? (
+              <div className="space-y-1">
+                <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto" />
+                <p className="text-xs font-bold text-slate-900">
+                  {selectedFile.name}
+                </p>
+                <p className="text-[11px] font-mono text-emerald-600 font-semibold">
+                  {formatFileSize(selectedFile.size)} ready to upload
+                </p>
+              </div>
+            ) : (
+              <>
+                <Upload className="w-8 h-8 text-slate-400 mx-auto" />
+                <p className="text-xs font-bold text-slate-900">
+                  {isEditing ? 'Click to select a new PDF to replace current document' : 'Choose note PDF to upload'}
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  Strictly PDF format only. File signature will be verified server-side.
+                </p>
+              </>
+            )}
             <input
               type="file"
               accept="application/pdf"
               onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-              className="text-xs text-slate-500 cursor-pointer"
+              className="text-xs text-slate-500 cursor-pointer pt-2"
             />
           </div>
         </div>
 
         {/* Submit Actions */}
-        <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
+        <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4">
           <button
             type="button"
+            disabled={saving}
             onClick={() => router.back()}
-            className="px-4 py-2 text-xs font-bold text-slate-600 hover:text-slate-900"
+            className="px-4 py-2 text-xs font-bold text-slate-600 hover:text-slate-900 transition-colors"
           >
             Cancel
           </button>
 
-          <button
-            type="submit"
-            disabled={saving}
-            className="px-6 py-2.5 rounded-full bg-slate-950 hover:bg-[#FFE500] hover:text-slate-950 text-white text-xs font-bold transition-all shadow-md flex items-center gap-2"
-          >
-            <Save className="w-3.5 h-3.5" />
-            <span>{saving ? 'Saving Note...' : isEditing ? 'Update Note' : 'Publish Note'}</span>
-          </button>
+          <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+            {saving && uploadStatusMsg && (
+              <span className="text-[11px] font-medium text-slate-500 flex items-center gap-1.5 animate-pulse">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-500" />
+                {uploadStatusMsg}
+              </span>
+            )}
+            <button
+              type="submit"
+              disabled={saving}
+              className="px-6 py-2.5 rounded-full bg-slate-950 hover:bg-[#FFE500] hover:text-slate-950 text-white text-xs font-bold transition-all shadow-md flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {saving ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>{isEditing ? 'Updating Note...' : 'Publishing Note...'}</span>
+                </>
+              ) : (
+                <>
+                  <Save className="w-3.5 h-3.5" />
+                  <span>{isEditing ? 'Update Note' : 'Publish Note'}</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </form>
   );
 }
-

@@ -4,6 +4,8 @@ import { notFound } from 'next/navigation';
 import { db } from '@/lib/db';
 import NoteEditorForm from '../../NoteEditorForm';
 
+export const dynamic = 'force-dynamic';
+
 interface EditPageProps {
   params: Promise<{ id: string }>;
 }
@@ -27,6 +29,7 @@ export default async function EditNotePage({ params }: EditPageProps) {
   const branches = await db.getBranches();
   const academicYears = await db.getAcademicYears();
   const patterns = await db.getPatterns();
+  const subjects = await db.getSubjects();
 
   return (
     <div className="space-y-6">
@@ -42,6 +45,7 @@ export default async function EditNotePage({ params }: EditPageProps) {
         branches={branches}
         academicYears={academicYears}
         patterns={patterns}
+        subjects={subjects}
       />
     </div>
   );

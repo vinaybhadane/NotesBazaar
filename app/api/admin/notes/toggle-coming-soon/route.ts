@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { revalidatePath } from 'next/cache';
 import { db } from '@/lib/db';
+
+export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   try {
@@ -28,10 +31,18 @@ export async function POST(req: NextRequest) {
       details: `Coming soon toggle changed to ${isComingSoon} for product "${updated.title}"`,
     });
 
+    try {
+      revalidatePath('/notes');
+      revalidatePath('/admin/notes');
+      revalidatePath('/');
+      revalidatePath(`/notes/${updated.slug}`);
+    } catch (e) {
+      console.warn('[RevalidatePath error]:', e);
+    }
+
     return NextResponse.json({ success: true, product: updated });
   } catch (error: any) {
     console.error('[API /api/admin/notes/toggle-coming-soon Error]:', error);
     return NextResponse.json({ error: error.message || 'Failed to toggle status' }, { status: 500 });
   }
 }
-
