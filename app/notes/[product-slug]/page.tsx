@@ -42,6 +42,7 @@ export async function generateMetadata({ params }: ProductPageProps): Promise<Me
       title: product.title,
       description: product.short_description,
       type: 'article',
+      ...(product.thumbnail_url ? { images: [product.thumbnail_url] } : {}),
     },
   };
 }
@@ -162,6 +163,17 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
             </p>
           </div>
 
+          {/* Responsive 16:9 Cover Thumbnail Banner */}
+          {product.thumbnail_url && (
+            <div className="w-full aspect-video rounded-3xl overflow-hidden border border-slate-200/90 shadow-sm bg-slate-100">
+              <img
+                src={product.thumbnail_url}
+                alt={product.title}
+                className="w-full h-full object-cover"
+              />
+            </div>
+          )}
+
           {/* Quick Specifications Strip */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-slate-50 rounded-2xl border border-slate-200/80 text-xs">
             <div>
@@ -274,7 +286,7 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
           <h2 className="text-2xl font-black text-slate-950">
             Related Notes in {product.branch_name}
           </h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredRelated.map((note) => (
               <NoteCard key={note.id} product={note} />
             ))}

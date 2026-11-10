@@ -48,7 +48,7 @@ export default function AccountSettingsPage() {
               className="w-full px-4 py-2 text-xs bg-slate-50 border border-slate-200 rounded-2xl text-slate-500 cursor-not-allowed"
             />
             <span className="text-[10px] text-slate-400 mt-1 block">
-              Verified through Firebase Authentication.
+              Verified via Google Sign-In.
             </span>
           </div>
 

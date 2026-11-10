@@ -127,25 +127,38 @@ export default function NotesListClient({
               {filtered.map((product) => (
                 <tr key={product.id} className="hover:bg-slate-50/60 transition-colors">
                   <td className="py-4 px-5">
-                    <span className="font-bold text-slate-900 block line-clamp-1">
-                      {product.title}
-                    </span>
-                    <div className="flex flex-wrap items-center gap-2 mt-0.5">
-                      <span className="text-[10px] text-slate-400">
-                        {product.branch_name || 'Engineering'} · {product.file_format} Document
-                        {product.file_size_bytes && product.file_size_bytes > 0
-                          ? ` (${(product.file_size_bytes / (1024 * 1024)).toFixed(2)} MB)`
-                          : ''}
-                      </span>
-                      {(!product.file_size_bytes || product.file_size_bytes <= 0) && !product.is_coming_soon && (
-                        <Link
-                          href={`/admin/notes/${product.id}/edit`}
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 hover:bg-red-200 text-[10px] font-bold transition-colors"
-                        >
-                          <AlertCircle className="w-3 h-3" />
-                          <span>No PDF Attached — Click to Upload</span>
-                        </Link>
-                      )}
+                    <div className="flex items-center gap-3">
+                      {product.thumbnail_url ? (
+                        <div className="w-20 aspect-video rounded-lg overflow-hidden border border-slate-200 bg-slate-100 flex-shrink-0 hidden sm:block">
+                          <img
+                            src={product.thumbnail_url}
+                            alt={product.title}
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                      ) : null}
+                      <div className="min-w-0">
+                        <span className="font-bold text-slate-900 block line-clamp-1">
+                          {product.title}
+                        </span>
+                        <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                          <span className="text-[10px] text-slate-400">
+                            {product.branch_name || 'Engineering'} · {product.file_format} Document
+                            {product.file_size_bytes && product.file_size_bytes > 0
+                              ? ` (${(product.file_size_bytes / (1024 * 1024)).toFixed(2)} MB)`
+                              : ''}
+                          </span>
+                          {(!product.file_size_bytes || product.file_size_bytes <= 0) && !product.is_coming_soon && (
+                            <Link
+                              href={`/admin/notes/${product.id}/edit`}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 hover:bg-red-200 text-[10px] font-bold transition-colors"
+                            >
+                              <AlertCircle className="w-3 h-3" />
+                              <span>No PDF Attached — Click to Upload</span>
+                            </Link>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   </td>
                   <td className="py-4 px-5">

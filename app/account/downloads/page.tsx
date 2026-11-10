@@ -61,10 +61,20 @@ export default function MyDownloadsPage() {
               className="p-5 sm:p-6 bg-white rounded-3xl border border-slate-200/90 shadow-sm space-y-4"
             >
               <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-                <div className="flex items-start gap-4">
-                  <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 text-slate-800 flex-shrink-0">
-                    <FileText className="w-6 h-6" />
-                  </div>
+                <div className="flex flex-col sm:flex-row items-start gap-4">
+                  {e.product?.thumbnail_url ? (
+                    <div className="w-full sm:w-32 aspect-video rounded-2xl overflow-hidden border border-slate-200 bg-slate-100 flex-shrink-0">
+                      <img
+                        src={e.product.thumbnail_url}
+                        alt={e.product.title || 'Notes Thumbnail'}
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 text-slate-800 flex-shrink-0">
+                      <FileText className="w-6 h-6" />
+                    </div>
+                  )}
                   <div>
                     <div className="flex items-center gap-2 mb-1">
                       <span className="pill-badge pill-badge-yellow">SPPU 2024 Pattern</span>

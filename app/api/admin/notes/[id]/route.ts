@@ -69,6 +69,10 @@ export async function PUT(req: NextRequest, { params }: Params) {
       if (formData.has('page_count')) {
         body.page_count = parseInt(formData.get('page_count') as string, 10);
       }
+      if (formData.has('thumbnail_url')) {
+        const thumbVal = ((formData.get('thumbnail_url') as string) || '').trim();
+        body.thumbnail_url = thumbVal || null;
+      }
 
       const topicsRaw = formData.get('topics_covered');
       if (topicsRaw && typeof topicsRaw === 'string') {
@@ -222,6 +226,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
     try {
       revalidatePath('/notes');
       revalidatePath('/admin/notes');
+      revalidatePath('/admin/uploaded-notes');
       revalidatePath('/');
       revalidatePath(`/notes/${updated.slug}`);
       revalidatePath('/account/downloads');
@@ -252,6 +257,7 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     try {
       revalidatePath('/notes');
       revalidatePath('/admin/notes');
+      revalidatePath('/admin/uploaded-notes');
       revalidatePath('/');
     } catch (e) {
       console.warn('[RevalidatePath error]:', e);

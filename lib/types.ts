@@ -86,6 +86,7 @@ export interface Product {
   file_size_bytes?: number;
   page_count?: number;
   preview_blob_url?: string | null;
+  thumbnail_url?: string | null;
   seo_title?: string;
   seo_description?: string;
   seo_keywords?: string;

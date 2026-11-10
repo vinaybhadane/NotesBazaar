@@ -51,6 +51,7 @@ export async function POST(req: NextRequest) {
         publication_status: (formData.get('publication_status') as any) || 'published',
         is_coming_soon: formData.get('is_coming_soon') === 'true',
         page_count: formData.get('page_count') ? parseInt(formData.get('page_count') as string, 10) : 65,
+        thumbnail_url: (formData.get('thumbnail_url') as string) || null,
       };
 
       const topicsRaw = formData.get('topics_covered');
@@ -149,6 +150,7 @@ export async function POST(req: NextRequest) {
       file_format: 'PDF',
       file_size_bytes: initialSizeBytes || undefined,
       page_count: body.page_count || 65,
+      thumbnail_url: body.thumbnail_url || null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -226,6 +228,7 @@ export async function POST(req: NextRequest) {
     try {
       revalidatePath('/notes');
       revalidatePath('/admin/notes');
+      revalidatePath('/admin/uploaded-notes');
       revalidatePath('/');
       revalidatePath('/branches');
       revalidatePath(`/notes/${saved.slug}`);

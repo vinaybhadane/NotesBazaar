@@ -5,11 +5,7 @@ import {
   User as FirebaseUser,
   onAuthStateChanged,
   signInWithPopup,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
   signOut,
-  sendPasswordResetEmail,
-  updateProfile,
 } from 'firebase/auth';
 import { auth, googleProvider } from '@/lib/firebase/client';
 import { User } from '@/lib/types';
@@ -20,9 +16,6 @@ interface AuthContextType {
   isAdmin: boolean;
   loading: boolean;
   signInWithGoogle: () => Promise<void>;
-  signInWithEmail: (e: string, p: string) => Promise<void>;
-  signUpWithEmail: (e: string, p: string, name?: string) => Promise<void>;
-  resetPassword: (e: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -33,9 +26,6 @@ const AuthContext = createContext<AuthContextType>({
   isAdmin: false,
   loading: true,
   signInWithGoogle: async () => {},
-  signInWithEmail: async () => {},
-  signUpWithEmail: async () => {},
-  resetPassword: async () => {},
   logout: async () => {},
   refreshUser: async () => {},
 });
@@ -96,31 +86,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const signInWithEmail = async (email: string, pass: string) => {
-    const result = await signInWithEmailAndPassword(auth, email.trim(), pass);
-    if (result.user) {
-      await syncUserWithBackend(result.user);
-    }
-  };
-
-  const signUpWithEmail = async (email: string, pass: string, name?: string) => {
-    const result = await createUserWithEmailAndPassword(auth, email.trim(), pass);
-    if (result.user) {
-      if (name) {
-        try {
-          await updateProfile(result.user, { displayName: name.trim() });
-        } catch {
-          // ignore profile update failure
-        }
-      }
-      await syncUserWithBackend(result.user);
-    }
-  };
-
-  const resetPassword = async (email: string) => {
-    await sendPasswordResetEmail(auth, email);
-  };
-
   const logout = async () => {
     await signOut(auth);
     setFirebaseUser(null);
@@ -140,9 +105,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isAdmin,
         loading,
         signInWithGoogle,
-        signInWithEmail,
-        signUpWithEmail,
-        resetPassword,
         logout,
         refreshUser,
       }}
@@ -155,4 +117,3 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 export function useAuth() {
   return useContext(AuthContext);
 }
-

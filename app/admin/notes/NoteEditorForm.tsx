@@ -17,6 +17,7 @@ import {
   X,
   Check,
   Plus,
+  ImageIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -64,6 +65,8 @@ export default function NoteEditorForm({
   const [topicsText, setTopicsText] = useState(
     initialProduct?.topics_covered?.join('\n') || ''
   );
+  const [thumbnailUrl, setThumbnailUrl] = useState(initialProduct?.thumbnail_url || '');
+  const [uploadingThumb, setUploadingThumb] = useState(false);
 
   // Multi-note purchase bundle management
   const [existingFiles, setExistingFiles] = useState<ProductFile[]>([]);
@@ -156,6 +159,90 @@ export default function NoteEditorForm({
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  };
+
+  const cropTo16x9Image = (file: File): Promise<File> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const objUrl = URL.createObjectURL(file);
+      img.onload = () => {
+        try {
+          const targetWidth = 1280;
+          const targetHeight = 720; // strict 16:9 ratio
+          const targetAspect = 16 / 9;
+          const srcAspect = img.width / img.height;
+
+          let sx = 0;
+          let sy = 0;
+          let sw = img.width;
+          let sh = img.height;
+
+          if (srcAspect > targetAspect) {
+            sw = img.height * targetAspect;
+            sx = (img.width - sw) / 2;
+          } else if (srcAspect < targetAspect) {
+            sh = img.width / targetAspect;
+            sy = (img.height - sh) / 2;
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            URL.revokeObjectURL(objUrl);
+            resolve(file);
+            return;
+          }
+          ctx.drawImage(img, sx, sy, sw, sh, 0, 0, targetWidth, targetHeight);
+          canvas.toBlob(
+            (blob) => {
+              URL.revokeObjectURL(objUrl);
+              if (!blob) {
+                resolve(file);
+                return;
+              }
+              const baseName = file.name.replace(/\.[^.]+$/, '') || 'thumbnail';
+              resolve(new File([blob], `${baseName}.jpg`, { type: 'image/jpeg' }));
+            },
+            'image/jpeg',
+            0.9
+          );
+        } catch (err) {
+          URL.revokeObjectURL(objUrl);
+          reject(err);
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objUrl);
+        reject(new Error('Could not read thumbnail image.'));
+      };
+      img.src = objUrl;
+    });
+  };
+
+  const handleThumbnailUpload = async (file: File) => {
+    setUploadingThumb(true);
+    try {
+      const croppedFile = await cropTo16x9Image(file);
+      const fd = new FormData();
+      fd.append('file', croppedFile);
+      const res = await fetch('/api/admin/upload-thumbnail', {
+        method: 'POST',
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || 'Failed to upload thumbnail.');
+        return;
+      }
+      setThumbnailUrl(data.url);
+      toast.success('16:9 cover thumbnail uploaded!');
+    } catch (err: any) {
+      toast.error(err.message || 'Thumbnail upload failed.');
+    } finally {
+      setUploadingThumb(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -293,6 +380,7 @@ export default function NoteEditorForm({
       formData.append('full_description', fullDesc.trim());
       formData.append('topics_covered', JSON.stringify(topicsArray));
       formData.append('page_count', (parseInt(pageCount, 10) || 65).toString());
+      formData.append('thumbnail_url', thumbnailUrl.trim());
 
       if (uploadedBlobs.length > 0) {
         formData.append('uploaded_blobs', JSON.stringify(uploadedBlobs));
@@ -616,6 +704,91 @@ export default function NoteEditorForm({
               onChange={(e) => setTopicsText(e.target.value)}
               className="w-full px-4 py-2 text-xs border border-slate-200 rounded-2xl text-slate-800 font-mono text-[11px] focus:outline-none focus:border-amber-400 leading-relaxed"
             />
+          </div>
+        </div>
+
+        {/* 16:9 Cover Thumbnail for Notes / Important Questions */}
+        <div className="pt-4 border-t border-slate-100 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-bold text-slate-950 uppercase tracking-wider text-[11px] text-slate-400">
+                16:9 Cover Thumbnail (Notes &amp; Question Papers)
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Upload a cover image (automatically fitted to crisp 16:9 widescreen ratio) displayed responsively on note cards and product pages.
+              </p>
+            </div>
+            <label className="px-4 py-2 rounded-2xl bg-slate-950 hover:bg-[#FFE500] hover:text-slate-950 text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer self-start sm:self-auto flex-shrink-0">
+              {uploadingThumb ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <ImageIcon className="w-3.5 h-3.5" />
+              )}
+              <span>{uploadingThumb ? 'Uploading 16:9...' : 'Upload 16:9 Thumbnail'}</span>
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                className="hidden"
+                disabled={uploadingThumb}
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    await handleThumbnailUpload(file);
+                    e.target.value = '';
+                  }
+                }}
+              />
+            </label>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+            {/* Live 16:9 Aspect Ratio Preview */}
+            <div className="relative w-full aspect-video rounded-2xl overflow-hidden border border-slate-200 bg-slate-50 flex items-center justify-center">
+              {thumbnailUrl ? (
+                <>
+                  <img
+                    src={thumbnailUrl}
+                    alt="16:9 Cover Preview"
+                    className="w-full h-full object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setThumbnailUrl('')}
+                    className="absolute top-2.5 right-2.5 p-1.5 rounded-full bg-slate-950/80 hover:bg-red-600 text-white transition-colors shadow-sm cursor-pointer"
+                    title="Remove Thumbnail"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                  <span className="absolute bottom-2 left-2 px-2 py-0.5 rounded-full bg-slate-950/75 text-white text-[10px] font-bold">
+                    16:9 Preview
+                  </span>
+                </>
+              ) : (
+                <div className="text-center p-4 space-y-1.5">
+                  <ImageIcon className="w-7 h-7 text-slate-300 mx-auto" />
+                  <p className="text-[11px] font-bold text-slate-500">16:9 Thumbnail Preview</p>
+                  <p className="text-[10px] text-slate-400">
+                    Any uploaded image is automatically center-cropped to 1280×720 (16:9)
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-900">
+                Or Paste Thumbnail Image URL (Optional)
+              </label>
+              <input
+                type="text"
+                placeholder="https://... or leave blank for auto-uploaded image"
+                value={thumbnailUrl}
+                onChange={(e) => setThumbnailUrl(e.target.value)}
+                className="w-full px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-2xl text-slate-700 font-mono focus:bg-white focus:outline-none focus:border-amber-400"
+              />
+              <p className="text-[10px] text-slate-400 leading-relaxed">
+                Supports JPG, PNG, and WebP. All thumbnails automatically preserve responsive 16:9 framing across mobile, tablet, and desktop.
+              </p>
+            </div>
           </div>
         </div>
 

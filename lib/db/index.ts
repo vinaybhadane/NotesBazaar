@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import sql from 'mssql';
+import { storage } from '@/lib/storage';
 import {
   Branch,
   AcademicYear,
@@ -229,6 +230,7 @@ async function getStore(): Promise<LocalDbSchema> {
       file_format: r.file_format || 'PDF',
       page_count: r.page_count || 0,
       file_size_bytes: Number(r.file_size_bytes || 0),
+      thumbnail_url: r.thumbnail_url || null,
       created_at: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
       updated_at: r.updated_at ? new Date(r.updated_at).toISOString() : new Date().toISOString(),
     }));
@@ -703,17 +705,18 @@ export const db = {
           .input('file_format', sql.NVarChar(20), product.file_format || 'PDF')
           .input('page_count', sql.Int, product.page_count || 0)
           .input('file_size_bytes', sql.BigInt, product.file_size_bytes || 0)
+          .input('thumbnail_url', sql.NVarChar(1000), product.thumbnail_url || null)
           .query(`
             INSERT INTO products (
               id, title, slug, branch_id, year_id, semester_id, subject_id, pattern_id,
               short_description, full_description, topics_covered, price_in_paise,
               compare_at_price_in_paise, publication_status, is_available, is_coming_soon,
-              file_format, page_count, file_size_bytes
+              file_format, page_count, file_size_bytes, thumbnail_url
             ) VALUES (
               @id, @title, @slug, @branch_id, @year_id, @semester_id, @subject_id, @pattern_id,
               @short_description, @full_description, @topics_covered, @price_in_paise,
               @compare_at_price_in_paise, @publication_status, @is_available, @is_coming_soon,
-              @file_format, @page_count, @file_size_bytes
+              @file_format, @page_count, @file_size_bytes, @thumbnail_url
             )
           `);
 
@@ -828,6 +831,10 @@ export const db = {
           req.input('file_size_bytes', sql.BigInt, updates.file_size_bytes);
           sets.push('file_size_bytes = @file_size_bytes');
         }
+        if (updates.thumbnail_url !== undefined) {
+          req.input('thumbnail_url', sql.NVarChar(1000), updates.thumbnail_url || null);
+          sets.push('thumbnail_url = @thumbnail_url');
+        }
         if (sets.length > 0) {
           sets.push('updated_at = SYSUTCDATETIME()');
           await req.query(`UPDATE products SET ${sets.join(', ')} WHERE id = @id`);
@@ -857,6 +864,14 @@ export const db = {
     const pool = await getSqlPool();
     if (pool) {
       try {
+        const filesRes = await pool.request()
+          .input('id', sql.NVarChar(50), id)
+          .query('SELECT blob_name, blob_container FROM product_files WHERE product_id = @id');
+        const prodRes = await pool.request()
+          .input('id', sql.NVarChar(50), id)
+          .query('SELECT TOP 1 thumbnail_url FROM products WHERE id = @id');
+        const thumbUrl: string | null = prodRes.recordset[0]?.thumbnail_url || null;
+
         await pool.request()
           .input('id', sql.NVarChar(50), id)
           .query(`
@@ -867,6 +882,27 @@ export const db = {
             DELETE FROM products WHERE id = @id;
           `);
         clearDbCache();
+
+        // Clean up blobs & thumbnail no longer referenced by any product
+        for (const f of filesRes.recordset) {
+          if (f.blob_name) {
+            const refCheck = await pool.request()
+              .input('blob_name', sql.NVarChar(500), f.blob_name)
+              .query('SELECT COUNT(*) as cnt FROM product_files WHERE blob_name = @blob_name');
+            if (Number(refCheck.recordset[0]?.cnt || 0) === 0) {
+              await storage.deletePrivateBlob(f.blob_name, f.blob_container);
+            }
+          }
+        }
+        if (thumbUrl) {
+          const thumbRef = await pool.request()
+            .input('thumb', sql.NVarChar(1000), thumbUrl)
+            .query('SELECT COUNT(*) as cnt FROM products WHERE thumbnail_url = @thumb');
+          if (Number(thumbRef.recordset[0]?.cnt || 0) === 0) {
+            await storage.deleteThumbnailFromUrl(thumbUrl);
+          }
+        }
+        return true;
       } catch (dbErr: any) {
         console.error('[Database] Azure SQL deleteProduct error:', dbErr);
         throw new Error(`Database error deleting product: ${dbErr.message}`);
@@ -997,6 +1033,9 @@ export const db = {
     file_size_bytes: number;
     created_at: string;
     product_title?: string;
+    product_slug?: string;
+    product_thumbnail_url?: string | null;
+    product_status?: string;
   }>> {
     const pool = await getSqlPool();
     if (pool) {
@@ -1004,7 +1043,8 @@ export const db = {
         const res = await pool.request().query(`
           SELECT pf.id, pf.product_id, pf.blob_container, pf.blob_name,
                  pf.original_filename, pf.mime_type, pf.file_size_bytes, pf.created_at,
-                 p.title as product_title
+                 p.title as product_title, p.slug as product_slug,
+                 p.thumbnail_url as product_thumbnail_url, p.publication_status as product_status
           FROM product_files pf
           LEFT JOIN products p ON pf.product_id = p.id
           ORDER BY pf.created_at DESC
@@ -1019,6 +1059,9 @@ export const db = {
           file_size_bytes: Number(r.file_size_bytes || 0),
           created_at: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
           product_title: r.product_title || undefined,
+          product_slug: r.product_slug || undefined,
+          product_thumbnail_url: r.product_thumbnail_url || null,
+          product_status: r.product_status || undefined,
         }));
       } catch (err) {
         console.warn('[db.getAllUploadedFiles error]:', err);
@@ -1084,11 +1127,14 @@ export const db = {
       try {
         const fileRes = await pool.request()
           .input('file_id', sql.NVarChar(50), fileId)
-          .query('SELECT TOP 1 product_id FROM product_files WHERE id = @file_id');
-        const productId = fileRes.recordset[0]?.product_id;
+          .query('SELECT TOP 1 product_id, blob_name, blob_container FROM product_files WHERE id = @file_id');
+        if (fileRes.recordset.length === 0) return false;
+        const { product_id: productId, blob_name: blobName, blob_container: blobContainer } = fileRes.recordset[0];
+
         await pool.request()
           .input('file_id', sql.NVarChar(50), fileId)
           .query('DELETE FROM product_files WHERE id = @file_id');
+
         if (productId) {
           await pool.request()
             .input('product_id', sql.NVarChar(50), productId)
@@ -1098,6 +1144,17 @@ export const db = {
               WHERE id = @product_id;
             `);
         }
+
+        // Delete underlying storage blob if no other product_files row still references it
+        if (blobName) {
+          const refRes = await pool.request()
+            .input('blob_name', sql.NVarChar(500), blobName)
+            .query('SELECT COUNT(*) as cnt FROM product_files WHERE blob_name = @blob_name');
+          if (Number(refRes.recordset[0]?.cnt || 0) === 0) {
+            await storage.deletePrivateBlob(blobName, blobContainer);
+          }
+        }
+
         clearDbCache();
         return true;
       } catch (err) {
@@ -1694,6 +1751,7 @@ export const db = {
             SELECT de.*, p.title as product_title, p.slug as product_slug,
                    p.short_description as product_short_description,
                    p.file_size_bytes as product_file_size_bytes,
+                   p.thumbnail_url as product_thumbnail_url,
                    p.branch_id, p.year_id, p.pattern_id, p.subject_id
             FROM download_entitlements de
             LEFT JOIN products p ON de.product_id = p.id
@@ -1750,6 +1808,7 @@ export const db = {
               year_id: r.year_id || '',
               pattern_id: r.pattern_id || '',
               subject_id: r.subject_id || '',
+              thumbnail_url: r.product_thumbnail_url || null,
               file_size_bytes: Number(r.product_file_size_bytes || 0),
             } as any,
             files: filesByProductId[r.product_id] || [],
