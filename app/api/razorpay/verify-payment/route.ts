@@ -97,6 +97,9 @@ export async function POST(req: NextRequest) {
       revalidatePath('/account/downloads');
       revalidatePath('/account/purchases');
       revalidatePath('/account');
+      revalidatePath('/admin');
+      revalidatePath('/admin/orders');
+      revalidatePath('/admin/payments');
     } catch (revalErr) {
       console.warn('[RevalidatePath error]:', revalErr);
     }

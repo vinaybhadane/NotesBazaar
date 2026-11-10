@@ -3,6 +3,9 @@ import type { Metadata } from 'next';
 import { db } from '@/lib/db';
 import { Layers, CheckCircle2 } from 'lucide-react';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 export const metadata: Metadata = {
   title: 'Catalog Structure | Admin NotesBazaar',
   robots: { index: false, follow: false },

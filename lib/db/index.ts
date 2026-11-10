@@ -1492,23 +1492,45 @@ export const db = {
             });
           }
 
-          return ordersRes.recordset.map((o: any) => ({
-            id: o.id,
-            user_id: o.user_id,
-            order_number: o.order_number || o.id,
-            customer_email: o.customer_email || 'student@notesbazaar.local',
-            customer_name: o.customer_name || undefined,
-            total_amount_in_paise: Number(o.total_amount_in_paise),
-            discount_amount_in_paise: Number(o.discount_amount_in_paise || 0),
-            final_amount_in_paise: Number(o.final_amount_in_paise),
-            currency: o.currency || 'INR',
-            status: o.status,
-            razorpay_order_id: o.razorpay_order_id,
-            razorpay_payment_id: o.razorpay_payment_id,
-            created_at: o.created_at ? new Date(o.created_at).toISOString() : new Date().toISOString(),
-            updated_at: o.updated_at ? new Date(o.updated_at).toISOString() : new Date().toISOString(),
-            items: itemsByOrderId[o.id] || [],
-          }));
+          const FIFTEEN_MIN_MS = 15 * 60 * 1000;
+          const now = Date.now();
+          const expiredIds: string[] = [];
+
+          const mapped = ordersRes.recordset.map((o: any) => {
+            let status = o.status as Order['status'];
+            const createdAt = o.created_at ? new Date(o.created_at) : new Date();
+            if ((status === 'pending' || status === 'created') && now - createdAt.getTime() > FIFTEEN_MIN_MS) {
+              status = 'cancelled';
+              expiredIds.push(o.id);
+            }
+            return {
+              id: o.id,
+              user_id: o.user_id,
+              order_number: o.order_number || o.id,
+              customer_email: o.customer_email || 'student@notesbazaar.local',
+              customer_name: o.customer_name || undefined,
+              total_amount_in_paise: Number(o.total_amount_in_paise),
+              discount_amount_in_paise: Number(o.discount_amount_in_paise || 0),
+              final_amount_in_paise: Number(o.final_amount_in_paise),
+              currency: o.currency || 'INR',
+              status,
+              razorpay_order_id: o.razorpay_order_id,
+              razorpay_payment_id: o.razorpay_payment_id,
+              created_at: createdAt.toISOString(),
+              updated_at: o.updated_at ? new Date(o.updated_at).toISOString() : createdAt.toISOString(),
+              items: itemsByOrderId[o.id] || [],
+            };
+          });
+
+          if (expiredIds.length > 0) {
+            pool.request().query(`
+              UPDATE orders
+              SET status = 'cancelled', updated_at = SYSUTCDATETIME()
+              WHERE id IN (${expiredIds.map((id) => `'${id.replace(/'/g, "''")}'`).join(',')})
+            `).catch(() => {});
+          }
+
+          return mapped;
         }
         return [];
       } catch (err) {
@@ -2383,28 +2405,26 @@ export const db = {
   },
 
   async getAdminStats() {
-    const data = await getStore();
-    const totalPublished = data.products.filter((p) => p.publication_status === 'published').length;
-    const totalDrafts = data.products.filter((p) => p.publication_status === 'draft').length;
-    const totalComingSoon = data.products.filter((p) => p.is_coming_soon).length;
-
     const pool = await getSqlPool();
     if (pool) {
       try {
         const statsRes = await pool.request().query(`
           SELECT
+            (SELECT COUNT(*) FROM products WHERE publication_status = 'published') as totalPublished,
+            (SELECT COUNT(*) FROM products WHERE publication_status = 'draft') as totalDrafts,
+            (SELECT COUNT(*) FROM products WHERE is_coming_soon = 1) as totalComingSoon,
             (SELECT COUNT(*) FROM orders) as totalOrders,
             (SELECT COUNT(*) FROM orders WHERE status = 'paid') as successfulPayments,
-            (SELECT COUNT(*) FROM orders WHERE status = 'failed' OR status = 'cancelled') as failedPayments,
-            (SELECT COUNT(*) FROM orders WHERE status = 'pending' OR status = 'created') as pendingPayments,
+            (SELECT COUNT(*) FROM orders WHERE status = 'failed' OR status = 'cancelled' OR (status IN ('pending', 'created') AND created_at < DATEADD(MINUTE, -15, SYSUTCDATETIME()))) as failedPayments,
+            (SELECT COUNT(*) FROM orders WHERE status IN ('pending', 'created') AND created_at >= DATEADD(MINUTE, -15, SYSUTCDATETIME())) as pendingPayments,
             (SELECT ISNULL(SUM(final_amount_in_paise), 0) FROM orders WHERE status = 'paid') as revenueTotalInPaise,
             (SELECT COUNT(*) FROM users) as totalUsers
         `);
         const row = statsRes.recordset[0];
         return {
-          totalPublished,
-          totalDrafts,
-          totalComingSoon,
+          totalPublished: Number(row.totalPublished || 0),
+          totalDrafts: Number(row.totalDrafts || 0),
+          totalComingSoon: Number(row.totalComingSoon || 0),
           totalOrders: Number(row.totalOrders || 0),
           successfulPayments: Number(row.successfulPayments || 0),
           failedPayments: Number(row.failedPayments || 0),
@@ -2416,6 +2436,11 @@ export const db = {
         console.error('[db.getAdminStats SQL error]:', err);
       }
     }
+
+    const data = await getStore();
+    const totalPublished = data.products.filter((p) => p.publication_status === 'published').length;
+    const totalDrafts = data.products.filter((p) => p.publication_status === 'draft').length;
+    const totalComingSoon = data.products.filter((p) => p.is_coming_soon).length;
 
     const totalOrders = data.orders.length;
     const paidOrders = data.orders.filter((o) => o.status === 'paid');

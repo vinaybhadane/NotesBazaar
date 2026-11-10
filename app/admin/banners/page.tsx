@@ -3,6 +3,9 @@ import type { Metadata } from 'next';
 import { db } from '@/lib/db';
 import BannersManagerClient from './BannersManagerClient';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 export const metadata: Metadata = {
   title: 'Homepage Banners | Admin NotesBazaar',
   robots: { index: false, follow: false },

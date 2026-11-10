@@ -1,7 +1,11 @@
 import React from 'react';
 import type { Metadata } from 'next';
 import { db } from '@/lib/db';
-import { CreditCard, ShieldCheck, CheckCircle2 } from 'lucide-react';
+import AdminLiveSync from '@/components/AdminLiveSync';
+import { CheckCircle2 } from 'lucide-react';
+
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 export const metadata: Metadata = {
   title: 'Payments & Gateway | Admin NotesBazaar',
@@ -14,13 +18,16 @@ export default async function AdminPaymentsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-black text-slate-950 tracking-tight">
-          Payments & Razorpay Reconciliations
-        </h1>
-        <p className="text-xs text-slate-500 mt-0.5">
-          Verified server-side HMAC-SHA256 signatures and webhook fulfillment logs
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-black text-slate-950 tracking-tight">
+            Payments & Razorpay Reconciliations
+          </h1>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Verified server-side HMAC-SHA256 signatures and webhook fulfillment logs
+          </p>
+        </div>
+        <AdminLiveSync />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -83,7 +90,11 @@ export default async function AdminPaymentsPage() {
                       </span>
                     </td>
                     <td className="py-3 px-4 text-slate-400 text-[11px]">
-                      {new Date(o.updated_at).toLocaleString()}
+                      {new Date(o.updated_at).toLocaleString('en-IN', {
+                        timeZone: 'Asia/Kolkata',
+                        dateStyle: 'medium',
+                        timeStyle: 'short',
+                      })}
                     </td>
                   </tr>
                 ))}

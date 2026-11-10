@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { revalidatePath } from 'next/cache';
 import { db } from '@/lib/db';
 import { verifyServerToken } from '@/lib/firebase/admin';
 import { razorpayService } from '@/lib/razorpay';
@@ -130,6 +131,11 @@ export async function POST(req: NextRequest) {
     };
 
     await db.createOrder(orderRecord, [orderItem]);
+
+    try {
+      revalidatePath('/admin');
+      revalidatePath('/admin/orders');
+    } catch {}
 
     return NextResponse.json({
       orderId: internalOrderId,

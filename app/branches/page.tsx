@@ -14,6 +14,9 @@ import {
   ArrowRight,
 } from 'lucide-react';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 export const metadata: Metadata = {
   title: 'SPPU Engineering Branches | NotesBazaar by AbhyasMitra',
   description:

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { revalidatePath } from 'next/cache';
 import { db } from '@/lib/db';
 import { razorpayService } from '@/lib/razorpay';
 import { Payment } from '@/lib/types';
@@ -69,6 +70,15 @@ export async function POST(req: NextRequest) {
 
     // 4. Record event as processed
     await db.recordWebhookProcessed(eventId);
+
+    try {
+      revalidatePath('/admin');
+      revalidatePath('/admin/orders');
+      revalidatePath('/admin/payments');
+      revalidatePath('/account/downloads');
+      revalidatePath('/account/purchases');
+      revalidatePath('/account');
+    } catch {}
 
     return NextResponse.json({ received: true });
   } catch (error: any) {

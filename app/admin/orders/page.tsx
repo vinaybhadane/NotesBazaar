@@ -1,7 +1,11 @@
 import React from 'react';
 import type { Metadata } from 'next';
 import { db } from '@/lib/db';
-import { ShoppingBag, CheckCircle2, Clock, XCircle } from 'lucide-react';
+import AdminLiveSync from '@/components/AdminLiveSync';
+import { ShoppingBag } from 'lucide-react';
+
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 export const metadata: Metadata = {
   title: 'Customer Orders | Admin NotesBazaar',
@@ -13,11 +17,14 @@ export default async function AdminOrdersPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-black text-slate-950 tracking-tight">Orders & Sales</h1>
-        <p className="text-xs text-slate-500 mt-0.5">
-          Audited log of student checkouts, transaction references, and payment verification states
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-black text-slate-950 tracking-tight">Orders & Sales</h1>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Audited log of student checkouts, transaction references, and payment verification states
+          </p>
+        </div>
+        <AdminLiveSync />
       </div>
 
       <div className="bg-white rounded-3xl border border-slate-200/90 shadow-sm overflow-hidden">
@@ -54,7 +61,7 @@ export default async function AdminOrdersPage() {
                         className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
                           o.status === 'paid'
                             ? 'bg-emerald-100 text-emerald-800'
-                            : o.status === 'pending'
+                            : o.status === 'pending' || o.status === 'created'
                             ? 'bg-amber-100 text-amber-800'
                             : 'bg-red-100 text-red-800'
                         }`}
@@ -63,7 +70,11 @@ export default async function AdminOrdersPage() {
                       </span>
                     </td>
                     <td className="py-3.5 px-5 text-slate-400 text-[11px]">
-                      {new Date(o.created_at).toLocaleString()}
+                      {new Date(o.created_at).toLocaleString('en-IN', {
+                        timeZone: 'Asia/Kolkata',
+                        dateStyle: 'medium',
+                        timeStyle: 'short',
+                      })}
                     </td>
                   </tr>
                 ))}

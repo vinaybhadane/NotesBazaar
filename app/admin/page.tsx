@@ -2,18 +2,15 @@ import React from 'react';
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { db } from '@/lib/db';
+import AdminLiveSync from '@/components/AdminLiveSync';
 import {
-  BookOpen,
-  ShoppingBag,
-  IndianRupee,
-  Clock,
-  CheckCircle2,
-  AlertTriangle,
   ArrowRight,
   Database,
-  ShieldCheck,
   PlusCircle,
 } from 'lucide-react';
+
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 export const metadata: Metadata = {
   title: 'Admin Dashboard | NotesBazaar',
@@ -24,9 +21,11 @@ export const metadata: Metadata = {
 };
 
 export default async function AdminDashboardPage() {
-  const stats = await db.getAdminStats();
-  const dbStatus = await db.getDatabaseStatus();
-  const recentOrders = await db.getAllOrders();
+  const [stats, dbStatus, recentOrders] = await Promise.all([
+    db.getAdminStats(),
+    db.getDatabaseStatus(),
+    db.getAllOrders(),
+  ]);
 
   const totalRevenueRupees = (stats.revenueTotalInPaise / 100).toFixed(0);
 
@@ -43,13 +42,16 @@ export default async function AdminDashboardPage() {
           </p>
         </div>
 
-        <Link
-          href="/admin/notes/new"
-          className="inline-flex items-center gap-1.5 px-4 py-2 bg-slate-950 hover:bg-[#FFE500] hover:text-slate-950 text-white rounded-full text-xs font-bold transition-all shadow-sm flex-shrink-0"
-        >
-          <PlusCircle className="w-4 h-4" />
-          <span>Upload New Note</span>
-        </Link>
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <AdminLiveSync />
+          <Link
+            href="/admin/notes/new"
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-slate-950 hover:bg-[#FFE500] hover:text-slate-950 text-white rounded-full text-xs font-bold transition-all shadow-sm flex-shrink-0"
+          >
+            <PlusCircle className="w-4 h-4" />
+            <span>Upload New Note</span>
+          </Link>
+        </div>
       </div>
 
       {/* Database Status Alert Banner */}
@@ -161,14 +163,20 @@ export default async function AdminDashboardPage() {
                         className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${
                           o.status === 'paid'
                             ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-amber-100 text-amber-800'
+                            : o.status === 'pending' || o.status === 'created'
+                            ? 'bg-amber-100 text-amber-800'
+                            : 'bg-red-100 text-red-800'
                         }`}
                       >
                         {o.status}
                       </span>
                     </td>
                     <td className="py-3 px-4 text-slate-400">
-                      {new Date(o.created_at).toLocaleDateString()}
+                      {new Date(o.created_at).toLocaleString('en-IN', {
+                        timeZone: 'Asia/Kolkata',
+                        dateStyle: 'medium',
+                        timeStyle: 'short',
+                      })}
                     </td>
                   </tr>
                 ))}

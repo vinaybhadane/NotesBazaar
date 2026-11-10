@@ -4,6 +4,9 @@ import Link from 'next/link';
 import { db } from '@/lib/db';
 import { Tag, Sparkles, Check, ArrowRight, Clock } from 'lucide-react';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 export const metadata: Metadata = {
   title: 'Student Offers & Discount Coupons | NotesBazaar by AbhyasMitra',
   description:
