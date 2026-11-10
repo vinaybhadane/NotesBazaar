@@ -81,21 +81,42 @@ export default function MyDownloadsPage() {
                     <span className="text-[10px] text-slate-400 mt-2 block">
                       Granted: {new Date(e.granted_at).toLocaleDateString()} · Access: Permanent Single License
                     </span>
+                    {e.files && e.files.length === 1 && (
+                      <span className="text-[11px] font-semibold text-emerald-700 mt-1.5 inline-flex items-center gap-1.5 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200/80">
+                        <FileText className="w-3.5 h-3.5" />
+                        <span>{e.files[0].original_filename}</span>
+                        {e.files[0].file_size_bytes ? (
+                          <span className="text-emerald-600 font-normal">
+                            ({formatFileSize(e.files[0].file_size_bytes)})
+                          </span>
+                        ) : null}
+                      </span>
+                    )}
                   </div>
                 </div>
 
-                {/* If single file or no files listed, show single prominent button */}
-                {(!e.files || e.files.length <= 1) && (
+                {/* Single file download button vs pending attachment status */}
+                {e.files && e.files.length === 1 ? (
                   <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2 border-t sm:border-t-0 pt-3 sm:pt-0">
                     <a
-                      href={`/api/download/${e.id}${e.files?.[0]?.id ? `?fileId=${e.files[0].id}` : ''}`}
+                      href={`/api/download/${e.id}?fileId=${e.files[0].id}`}
                       className="px-5 py-2.5 rounded-full bg-slate-950 hover:bg-[#FFE500] hover:text-slate-950 text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 flex-shrink-0"
                     >
                       <Download className="w-3.5 h-3.5" />
                       <span>Download PDF</span>
                     </a>
                   </div>
-                )}
+                ) : (!e.files || e.files.length === 0) ? (
+                  <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-1.5 border-t sm:border-t-0 pt-3 sm:pt-0">
+                    <span className="px-4 py-2 rounded-full bg-amber-50 text-amber-800 border border-amber-200 text-[11px] font-bold flex items-center gap-1.5 flex-shrink-0">
+                      <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                      <span>PDF Pending Upload</span>
+                    </span>
+                    <span className="text-[10px] text-slate-400 text-right max-w-[200px]">
+                      Purchase verified. Refresh once document is attached by admin.
+                    </span>
+                  </div>
+                ) : null}
               </div>
 
               {/* Multi-Note Purchase Bundle Display */}

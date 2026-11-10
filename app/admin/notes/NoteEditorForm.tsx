@@ -171,11 +171,19 @@ export default function NoteEditorForm({
       return;
     }
 
+    const totalAttachedCount = existingFiles.length + selectedDbFiles.length + newUploadFiles.length;
+    if (publicationStatus === 'published' && !isComingSoon && totalAttachedCount === 0) {
+      toast.error(
+        'Please upload or select at least one PDF document before publishing a purchasable note (or mark it as Coming Soon / Draft).'
+      );
+      return;
+    }
+
     setSaving(true);
     const hasFilesToUpload = newUploadFiles.length > 0;
     setUploadStatusMsg(
       hasFilesToUpload
-        ? `Uploading ${newUploadFiles.length} note document(s) to secure storage & saving note...`
+        ? `Uploading ${newUploadFiles.length} note document(s) to secure storage...`
         : 'Saving note configuration to catalog...'
     );
 
@@ -189,6 +197,84 @@ export default function NoteEditorForm({
       const comparePricePaise = comparePriceRupees
         ? Math.round(parseFloat(comparePriceRupees) * 100)
         : null;
+
+      // Upload new PDF files directly to Azure Blob Storage via SAS URL when supported (supports >4.5MB files cleanly)
+      const uploadedBlobs: Array<{
+        blob_name: string;
+        blob_container: string;
+        original_filename: string;
+        file_size_bytes: number;
+        mime_type: string;
+      }> = [];
+      const fallbackFiles: File[] = [];
+
+      for (let i = 0; i < newUploadFiles.length; i++) {
+        const f = newUploadFiles[i];
+        setUploadStatusMsg(`Uploading document ${i + 1} of ${newUploadFiles.length}: ${f.name}...`);
+
+        // Validate PDF magic bytes client-side first
+        const headText = await f.slice(0, 4).text();
+        if (headText !== '%PDF') {
+          toast.error(`"${f.name}" is not a valid PDF document.`);
+          setSaving(false);
+          return;
+        }
+
+        let uploadedDirectly = false;
+        try {
+          const sasRes = await fetch('/api/admin/upload-sas', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              filename: f.name,
+              productId: initialProduct?.id || 'prod',
+            }),
+          });
+          if (sasRes.ok) {
+            const sasData = await sasRes.json();
+            if (sasData.supported && sasData.uploadUrl) {
+              const cleanFilename = f.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+              const putRes = await fetch(sasData.uploadUrl, {
+                method: 'PUT',
+                headers: {
+                  'x-ms-blob-type': 'BlockBlob',
+                  'Content-Type': 'application/pdf',
+                  'x-ms-blob-content-type': 'application/pdf',
+                  'x-ms-blob-content-disposition': `attachment; filename="${cleanFilename}"`,
+                },
+                body: f,
+              });
+              if (putRes.ok) {
+                uploadedBlobs.push({
+                  blob_name: sasData.blobName,
+                  blob_container: sasData.container,
+                  original_filename: f.name,
+                  file_size_bytes: f.size,
+                  mime_type: f.type || 'application/pdf',
+                });
+                uploadedDirectly = true;
+              } else {
+                console.warn('[NoteEditorForm] Direct Azure SAS PUT returned', putRes.status);
+              }
+            }
+          }
+        } catch (sasErr) {
+          console.warn('[NoteEditorForm] Direct SAS upload fallback:', sasErr);
+        }
+
+        if (!uploadedDirectly) {
+          if (f.size > 4 * 1024 * 1024) {
+            toast.error(
+              `Direct cloud upload failed for large PDF "${f.name}" (${formatFileSize(f.size)}). Please retry.`
+            );
+            setSaving(false);
+            return;
+          }
+          fallbackFiles.push(f);
+        }
+      }
+
+      setUploadStatusMsg('Finalizing note details & saving catalog record...');
 
       const formData = new FormData();
       formData.append('title', title.trim());
@@ -208,8 +294,12 @@ export default function NoteEditorForm({
       formData.append('topics_covered', JSON.stringify(topicsArray));
       formData.append('page_count', (parseInt(pageCount, 10) || 65).toString());
 
-      // Append all newly uploaded files
-      for (const f of newUploadFiles) {
+      if (uploadedBlobs.length > 0) {
+        formData.append('uploaded_blobs', JSON.stringify(uploadedBlobs));
+      }
+
+      // Append any non-SAS fallback files
+      for (const f of fallbackFiles) {
         formData.append('files', f);
       }
 
@@ -550,11 +640,23 @@ export default function NoteEditorForm({
                   multiple
                   accept="application/pdf"
                   className="hidden"
-                  onChange={(e) => {
+                  onChange={async (e) => {
                     if (e.target.files && e.target.files.length > 0) {
                       const filesArray = Array.from(e.target.files);
-                      setNewUploadFiles((prev) => [...prev, ...filesArray]);
-                      toast.success(`Added ${filesArray.length} file(s) to upload queue`);
+                      const validPdfs: File[] = [];
+                      for (const f of filesArray) {
+                        const head = await f.slice(0, 4).text();
+                        if (head !== '%PDF') {
+                          toast.error(`Skipped "${f.name}" — only valid PDF files are accepted.`);
+                        } else {
+                          validPdfs.push(f);
+                        }
+                      }
+                      if (validPdfs.length > 0) {
+                        setNewUploadFiles((prev) => [...prev, ...validPdfs]);
+                        toast.success(`Added ${validPdfs.length} PDF document(s) to upload queue`);
+                      }
+                      e.target.value = '';
                     }
                   }}
                 />

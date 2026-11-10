@@ -6,6 +6,14 @@ import { Product } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
+interface PreUploadedBlob {
+  blob_name: string;
+  blob_container: string;
+  original_filename: string;
+  file_size_bytes: number;
+  mime_type?: string;
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { products } = await db.getProducts({ status: 'all' });
@@ -19,9 +27,12 @@ export async function POST(req: NextRequest) {
   try {
     const contentType = req.headers.get('content-type') || '';
     let body: any = {};
-    let file: File | null = null;
+    const uploadedFiles: File[] = [];
+    let selectedFileIds: string[] = [];
+    let uploadedBlobs: PreUploadedBlob[] = [];
 
     if (contentType.includes('multipart/form-data')) {
+      // Parse req.formData() strictly ONCE to avoid stream already-read errors
       const formData = await req.formData();
       body = {
         title: formData.get('title') as string,
@@ -51,17 +62,72 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      file = formData.get('file') as File | null;
+      const multiple = formData.getAll('files') as File[];
+      for (const f of multiple) {
+        if (f && typeof f === 'object' && 'size' in f && f.size > 0) {
+          uploadedFiles.push(f);
+        }
+      }
+      const single = formData.get('file') as File | null;
+      if (
+        single &&
+        typeof single === 'object' &&
+        'size' in single &&
+        single.size > 0 &&
+        !uploadedFiles.some((f) => f.name === single.name && f.size === single.size)
+      ) {
+        uploadedFiles.push(single);
+      }
+
+      const selectedExistingRaw = formData.get('selected_file_ids');
+      if (selectedExistingRaw && typeof selectedExistingRaw === 'string') {
+        try {
+          selectedFileIds = JSON.parse(selectedExistingRaw);
+        } catch {}
+      }
+
+      const uploadedBlobsRaw = formData.get('uploaded_blobs');
+      if (uploadedBlobsRaw && typeof uploadedBlobsRaw === 'string') {
+        try {
+          uploadedBlobs = JSON.parse(uploadedBlobsRaw);
+        } catch {}
+      }
     } else {
       body = await req.json();
+      if (Array.isArray(body.selected_file_ids)) {
+        selectedFileIds = body.selected_file_ids;
+      }
+      if (Array.isArray(body.uploaded_blobs)) {
+        uploadedBlobs = body.uploaded_blobs;
+      }
     }
 
     if (!body.title || !body.slug || typeof body.price_in_paise !== 'number') {
       return NextResponse.json({ error: 'Title, slug, and price are required' }, { status: 400 });
     }
 
+    // Pre-verify any directly uploaded SAS blobs before creating product
+    for (const blob of uploadedBlobs) {
+      const check = await storage.verifyBlob(blob.blob_name, blob.blob_container);
+      if (!check.exists) {
+        return NextResponse.json(
+          { error: `Uploaded document "${blob.original_filename}" was not found in Azure storage. Please retry.` },
+          { status: 400 }
+        );
+      }
+      if (!check.isPdf) {
+        return NextResponse.json(
+          { error: `Invalid file format for "${blob.original_filename}". Only valid PDF files are allowed.` },
+          { status: 400 }
+        );
+      }
+      blob.file_size_bytes = check.size || blob.file_size_bytes;
+    }
+
     const productId = `prod_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const fileSizeBytes = file ? file.size : 0;
+    const initialSizeBytes =
+      uploadedFiles.reduce((s, f) => s + f.size, 0) +
+      uploadedBlobs.reduce((s, b) => s + (b.file_size_bytes || 0), 0);
 
     const newProduct: Product & { subject_name?: string } = {
       id: productId,
@@ -81,51 +147,41 @@ export async function POST(req: NextRequest) {
       is_coming_soon: Boolean(body.is_coming_soon),
       is_available: !Boolean(body.is_coming_soon),
       file_format: 'PDF',
-      file_size_bytes: fileSizeBytes || undefined,
+      file_size_bytes: initialSizeBytes || undefined,
       page_count: body.page_count || 65,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
 
-    // 1. Create the product FIRST so foreign key constraint fk_files_product is satisfied!
+    // 1. Create the product FIRST so foreign key constraint fk_files_product is satisfied
     const saved = await db.createProduct(newProduct);
 
-    // 2. Upload newly provided file(s) and record in product_files
-    let totalUploadedBytes = 0;
+    try {
+      let totalUploadedBytes = 0;
 
-    // Collect all uploaded files (single or multiple)
-    const uploadedFiles: File[] = [];
-    if (contentType.includes('multipart/form-data')) {
-      const formData = await req.formData().catch(() => null);
-      if (formData) {
-        const multiple = formData.getAll('files') as File[];
-        for (const f of multiple) {
-          if (f && f.size > 0) uploadedFiles.push(f);
-        }
-        const single = formData.get('file') as File | null;
-        if (single && single.size > 0 && !uploadedFiles.some((f) => f.name === single.name && f.size === single.size)) {
-          uploadedFiles.push(single);
-        }
-
-        // Attach selected existing files from database if any
-        const selectedExistingRaw = formData.get('selected_file_ids');
-        if (selectedExistingRaw && typeof selectedExistingRaw === 'string') {
-          try {
-            const fileIds: string[] = JSON.parse(selectedExistingRaw);
-            for (const fileId of fileIds) {
-              await db.attachExistingFileToProduct(saved.id, fileId);
-            }
-          } catch (e) {
-            console.warn('[API /api/admin/notes] Error attaching existing DB files:', e);
-          }
+      // 2a. Attach selected existing files from DB
+      for (const fileId of selectedFileIds) {
+        const attached = await db.attachExistingFileToProduct(saved.id, fileId);
+        if (attached) {
+          totalUploadedBytes += attached.file_size_bytes || 0;
         }
       }
-    } else if (file && file.size > 0) {
-      uploadedFiles.push(file);
-    }
 
-    for (const f of uploadedFiles) {
-      try {
+      // 2b. Record pre-uploaded SAS blobs in product_files
+      for (const blob of uploadedBlobs) {
+        const rec = await db.recordProductFile({
+          product_id: saved.id,
+          blob_container: blob.blob_container,
+          blob_name: blob.blob_name,
+          original_filename: blob.original_filename,
+          file_size_bytes: blob.file_size_bytes,
+          mime_type: blob.mime_type || 'application/pdf',
+        });
+        totalUploadedBytes += rec.file_size_bytes || 0;
+      }
+
+      // 2c. Upload multipart files and record in product_files
+      for (const f of uploadedFiles) {
         const arrayBuf = await f.arrayBuffer();
         const buffer = Buffer.from(arrayBuf);
         const uploadResult = await storage.uploadPrivateNote(buffer, f.name, saved.id);
@@ -138,13 +194,23 @@ export async function POST(req: NextRequest) {
           mime_type: f.type || 'application/pdf',
         });
         totalUploadedBytes += uploadResult.size;
-      } catch (fileErr) {
-        console.error('[API /api/admin/notes] File upload warning:', fileErr);
       }
-    }
 
-    if (totalUploadedBytes > 0) {
-      saved.file_size_bytes = totalUploadedBytes;
+      if (totalUploadedBytes > 0) {
+        saved.file_size_bytes = totalUploadedBytes;
+      }
+    } catch (fileErr: any) {
+      // Clean up partially created product if file upload failed so admin doesn't publish a broken note
+      console.error('[API /api/admin/notes POST] File attachment failed, rolling back product:', fileErr);
+      try {
+        await db.deleteProduct(saved.id);
+      } catch (cleanupErr) {
+        console.warn('[API /api/admin/notes POST] Cleanup failed:', cleanupErr);
+      }
+      return NextResponse.json(
+        { error: fileErr.message || 'Failed to upload/attach note document(s). Product was not published.' },
+        { status: 400 }
+      );
     }
 
     // Audit log
@@ -162,6 +228,7 @@ export async function POST(req: NextRequest) {
       revalidatePath('/admin/notes');
       revalidatePath('/');
       revalidatePath('/branches');
+      revalidatePath(`/notes/${saved.slug}`);
     } catch (revalErr) {
       console.warn('[RevalidatePath error]:', revalErr);
     }

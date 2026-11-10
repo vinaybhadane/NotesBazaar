@@ -9,6 +9,14 @@ interface Params {
   params: Promise<{ id: string }>;
 }
 
+interface PreUploadedBlob {
+  blob_name: string;
+  blob_container: string;
+  original_filename: string;
+  file_size_bytes: number;
+  mime_type?: string;
+}
+
 export async function GET(req: NextRequest, { params }: Params) {
   const resolved = await params;
   const product = await db.getProductById(resolved.id);
@@ -29,7 +37,9 @@ export async function PUT(req: NextRequest, { params }: Params) {
     let body: any = {};
     const uploadedFiles: File[] = [];
     let selectedFileIds: string[] = [];
+    let uploadedBlobs: PreUploadedBlob[] = [];
     let keptFileIds: string[] = [];
+    let hasKeptFilesField = false;
 
     if (contentType.includes('multipart/form-data')) {
       const formData = await req.formData();
@@ -72,10 +82,16 @@ export async function PUT(req: NextRequest, { params }: Params) {
       // Collect multiple files
       const multiple = formData.getAll('files') as File[];
       for (const f of multiple) {
-        if (f && f.size > 0) uploadedFiles.push(f);
+        if (f && typeof f === 'object' && 'size' in f && f.size > 0) uploadedFiles.push(f);
       }
       const single = formData.get('file') as File | null;
-      if (single && single.size > 0 && !uploadedFiles.some((f) => f.name === single.name && f.size === single.size)) {
+      if (
+        single &&
+        typeof single === 'object' &&
+        'size' in single &&
+        single.size > 0 &&
+        !uploadedFiles.some((f) => f.name === single.name && f.size === single.size)
+      ) {
         uploadedFiles.push(single);
       }
 
@@ -86,18 +102,60 @@ export async function PUT(req: NextRequest, { params }: Params) {
         } catch {}
       }
 
-      const keptIdsRaw = formData.get('kept_file_ids');
-      if (keptIdsRaw && typeof keptIdsRaw === 'string') {
+      const blobsRaw = formData.get('uploaded_blobs');
+      if (blobsRaw && typeof blobsRaw === 'string') {
         try {
-          keptFileIds = JSON.parse(keptIdsRaw);
+          uploadedBlobs = JSON.parse(blobsRaw);
         } catch {}
+      }
+
+      if (formData.has('kept_file_ids')) {
+        hasKeptFilesField = true;
+        const keptIdsRaw = formData.get('kept_file_ids');
+        if (keptIdsRaw && typeof keptIdsRaw === 'string') {
+          try {
+            keptFileIds = JSON.parse(keptIdsRaw);
+          } catch {}
+        }
       }
     } else {
       body = await req.json();
+      if (Array.isArray(body.selected_file_ids)) {
+        selectedFileIds = body.selected_file_ids;
+      }
+      if (Array.isArray(body.uploaded_blobs)) {
+        uploadedBlobs = body.uploaded_blobs;
+      }
+      if (Array.isArray(body.kept_file_ids)) {
+        hasKeptFilesField = true;
+        keptFileIds = body.kept_file_ids;
+      }
+      // Clean non-product fields from body before updateProduct
+      delete body.selected_file_ids;
+      delete body.uploaded_blobs;
+      delete body.kept_file_ids;
     }
 
-    // Process removals if keptFileIds was provided
-    if (keptFileIds.length > 0 || (contentType.includes('multipart/form-data') && !uploadedFiles.length && !selectedFileIds.length)) {
+    // Pre-verify any directly uploaded SAS blobs before applying changes
+    for (const blob of uploadedBlobs) {
+      const check = await storage.verifyBlob(blob.blob_name, blob.blob_container);
+      if (!check.exists) {
+        return NextResponse.json(
+          { error: `Uploaded document "${blob.original_filename}" was not found in Azure storage. Please retry.` },
+          { status: 400 }
+        );
+      }
+      if (!check.isPdf) {
+        return NextResponse.json(
+          { error: `Invalid file format for "${blob.original_filename}". Only valid PDF files are allowed.` },
+          { status: 400 }
+        );
+      }
+      blob.file_size_bytes = check.size || blob.file_size_bytes;
+    }
+
+    // Process removals whenever kept_file_ids field is submitted
+    if (hasKeptFilesField) {
       const currentFiles = await db.getProductFilesByProductId(resolved.id);
       for (const cur of currentFiles) {
         if (!keptFileIds.includes(cur.id)) {
@@ -111,27 +169,40 @@ export async function PUT(req: NextRequest, { params }: Params) {
       await db.attachExistingFileToProduct(resolved.id, fileId);
     }
 
-    // Upload newly attached files
-    for (const f of uploadedFiles) {
-      try {
-        const arrayBuf = await f.arrayBuffer();
-        const buffer = Buffer.from(arrayBuf);
-        const uploadResult = await storage.uploadPrivateNote(buffer, f.name, resolved.id);
-        await db.recordProductFile({
-          product_id: resolved.id,
-          blob_container: uploadResult.container,
-          blob_name: uploadResult.blobName,
-          original_filename: f.name,
-          file_size_bytes: uploadResult.size,
-          mime_type: f.type || 'application/pdf',
-        });
-      } catch (err: any) {
-        console.error('[API /api/admin/notes/[id] PUT] File upload error:', err.message);
-      }
+    // Record pre-uploaded SAS blobs
+    for (const blob of uploadedBlobs) {
+      await db.recordProductFile({
+        product_id: resolved.id,
+        blob_container: blob.blob_container,
+        blob_name: blob.blob_name,
+        original_filename: blob.original_filename,
+        file_size_bytes: blob.file_size_bytes,
+        mime_type: blob.mime_type || 'application/pdf',
+      });
     }
+
+    // Upload newly attached multipart files
+    for (const f of uploadedFiles) {
+      const arrayBuf = await f.arrayBuffer();
+      const buffer = Buffer.from(arrayBuf);
+      const uploadResult = await storage.uploadPrivateNote(buffer, f.name, resolved.id);
+      await db.recordProductFile({
+        product_id: resolved.id,
+        blob_container: uploadResult.container,
+        blob_name: uploadResult.blobName,
+        original_filename: f.name,
+        file_size_bytes: uploadResult.size,
+        mime_type: f.type || 'application/pdf',
+      });
+    }
+
+    // Compute updated total file size across all files now attached to product
+    const finalFiles = await db.getProductFilesByProductId(resolved.id);
+    const totalBytes = finalFiles.reduce((s, f) => s + (f.file_size_bytes || 0), 0);
 
     const updated = await db.updateProduct(resolved.id, {
       ...body,
+      file_size_bytes: totalBytes,
       is_available: typeof body.is_coming_soon === 'boolean' ? !body.is_coming_soon : undefined,
     });
 
@@ -145,7 +216,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
       action: 'UPDATE_NOTE',
       entity_type: 'product',
       entity_id: resolved.id,
-      details: `Updated note "${updated.title}"`,
+      details: `Updated note "${updated.title}" (${finalFiles.length} file(s) attached)`,
     });
 
     try {
@@ -153,11 +224,12 @@ export async function PUT(req: NextRequest, { params }: Params) {
       revalidatePath('/admin/notes');
       revalidatePath('/');
       revalidatePath(`/notes/${updated.slug}`);
+      revalidatePath('/account/downloads');
     } catch (e) {
       console.warn('[RevalidatePath error]:', e);
     }
 
-    return NextResponse.json({ product: updated });
+    return NextResponse.json({ product: updated, files: finalFiles });
   } catch (error: any) {
     console.error('[API /api/admin/notes/[id] PUT Error]:', error);
     return NextResponse.json({ error: error.message || 'Failed to update note' }, { status: 500 });

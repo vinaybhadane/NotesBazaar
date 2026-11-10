@@ -1635,6 +1635,36 @@ export const db = {
     if (pool) {
       try {
         const emailLower = (userEmail || '').trim().toLowerCase();
+
+        // Self-heal: backfill any missing active entitlements for already-paid orders of this user
+        await pool.request()
+          .input('user_id', sql.NVarChar(50), userId)
+          .input('email', sql.NVarChar(255), emailLower)
+          .query(`
+            INSERT INTO download_entitlements (id, user_id, product_id, order_id, status, granted_at)
+            SELECT
+              'ent_' + LEFT(REPLACE(CAST(NEWID() AS NVARCHAR(36)), '-', ''), 16),
+              o.user_id,
+              oi.product_id,
+              o.id,
+              'active',
+              SYSUTCDATETIME()
+            FROM orders o
+            INNER JOIN order_items oi ON oi.order_id = o.id
+            INNER JOIN products p ON p.id = oi.product_id
+            WHERE o.status = 'paid'
+              AND (
+                o.user_id = @user_id
+                OR (LEN(@email) > 0 AND LOWER(o.customer_email) = @email)
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM download_entitlements de
+                WHERE de.order_id = o.id AND de.product_id = oi.product_id AND de.status = 'active'
+              )
+          `).catch((healErr) => {
+            console.warn('[db.getEntitlementsByUser reconcile warning]:', healErr);
+          });
+
         const entRes = await pool.request()
           .input('user_id', sql.NVarChar(50), userId)
           .input('email', sql.NVarChar(255), emailLower)
